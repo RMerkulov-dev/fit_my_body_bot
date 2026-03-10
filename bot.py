@@ -452,7 +452,8 @@ async def process_calories(message: types.Message, state: FSMContext):
 async def btn_statistics(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Сьогодні (Зведення)", callback_data="stat_today")],
-        [InlineKeyboardButton(text="🔥 За 7 днів", callback_data="stat_7days")]
+        [InlineKeyboardButton(text="🔥 За 7 днів", callback_data="stat_7days")],
+        [InlineKeyboardButton(text="🗑 Скинути статистику", callback_data="reset_stats")]
     ])
     await message.answer("Обери звіт:", reply_markup=kb)
 
@@ -494,6 +495,34 @@ async def callback_stat_7days(callback: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Помилка статистики за 7 днів: {e}")
         await callback.message.answer("Помилка при розрахунку статистики.")
+
+@dp.callback_query(F.data == "reset_stats")
+async def callback_reset_stats_ask(callback: types.CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ Так, видалити все", callback_data="confirm_reset")],
+        [InlineKeyboardButton(text="❌ Ні, скасувати", callback_data="cancel_reset")]
+    ])
+    await callback.message.edit_text(
+        "⚠️ **УВАГА!**\nВи дійсно хочете видалити всю історію (з'їдені калорії та логи ваги)?\n\n*Ваш профіль (зріст, вік, добова мета) залишиться.*", 
+        reply_markup=kb, parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data == "confirm_reset")
+async def callback_confirm_reset(callback: types.CallbackQuery):
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM calorie_log WHERE user_id = %s", (callback.from_user.id,))
+                cursor.execute("DELETE FROM weight_log WHERE user_id = %s", (callback.from_user.id,))
+            conn.commit()
+        await callback.message.edit_text("✅ Вся ваша статистика була успішно очищена!")
+    except Exception as e:
+        logger.error(f"Помилка при скиданні статистики: {e}")
+        await callback.message.edit_text("❌ Виникла помилка при видаленні даних.")
+
+@dp.callback_query(F.data == "cancel_reset")
+async def callback_cancel_reset(callback: types.CallbackQuery):
+    await callback.message.edit_text("✅ Дію скасовано. Ваша статистика в безпеці!")
 
 # ==========================================
 # 9. ЗАПУСК БОТА
