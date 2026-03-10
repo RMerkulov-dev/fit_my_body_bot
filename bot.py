@@ -565,6 +565,7 @@ async def btn_statistics(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Сьогодні (Зведення)", callback_data="stat_today")],
         [InlineKeyboardButton(text="🔥 За 7 днів", callback_data="stat_7days")],
+        [InlineKeyboardButton(text="📈 Загальний прогрес", callback_data="stat_overall")],
         [InlineKeyboardButton(text="🗑 Скинути статистику", callback_data="reset_stats")]
     ])
     await message.answer("Обери звіт:", reply_markup=kb)
@@ -607,6 +608,63 @@ async def callback_stat_7days(callback: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Помилка статистики за 7 днів: {e}")
         await callback.message.answer("Помилка при розрахунку статистики.")
+
+@dp.callback_query(F.data == "stat_overall")
+async def callback_stat_overall(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                # Дані по калоріях (групування за днями)
+                cursor.execute("SELECT date, SUM(calories) FROM calorie_log WHERE user_id = %s GROUP BY date", (user_id,))
+                daily_totals = cursor.fetchall()
+                
+                # Дані по вазі (перша і остання)
+                cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY id ASC LIMIT 1", (user_id,))
+                first_w = cursor.fetchone()
+                cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
+                last_w = cursor.fetchone()
+
+        # Формуємо звіт по калоріях
+        if not daily_totals:
+            cal_text = "🍽 Немає записів калорій. Почніть додавати прийоми їжі!"
+        else:
+            max_day = max(daily_totals, key=lambda x: x[1])
+            min_day = min(daily_totals, key=lambda x: x[1])
+            
+            cal_text = (
+                f"🔥 **Рекорди калорій:**\n"
+                f"📈 Найбільше за день: {max_day[1]} ккал ({max_day[0]})\n"
+                f"📉 Найменше за день: {min_day[1]} ккал ({min_day[0]})"
+            )
+
+        # Формуємо звіт по вазі
+        weight_text = "⚖️ **Прогрес ваги:** Немає даних."
+        if first_w and last_w:
+            w_start = first_w[0]
+            w_now = last_w[0]
+            diff = w_now - w_start
+            
+            if diff > 0:
+                w_status = f"🔺 Ви набрали: +{diff:.1f} кг"
+            elif diff < 0:
+                w_status = f"🔻 Ви скинули: {diff:.1f} кг 🎉"
+            else:
+                w_status = "⚖️ Вага без змін."
+            
+            weight_text = (
+                f"⚖️ **Прогрес ваги:**\n"
+                f"Початкова вага: {w_start} кг\n"
+                f"Поточна вага: {w_now} кг\n"
+                f"**{w_status}**"
+            )
+
+        res = f"📈 **Загальна статистика:**\n\n{cal_text}\n\n{weight_text}"
+        await callback.message.edit_text(res, parse_mode="Markdown")
+        
+    except Exception as e:
+        logger.error(f"Помилка загальної статистики: {e}")
+        await callback.message.answer("Помилка при розрахунку загальної статистики.")
 
 @dp.callback_query(F.data == "reset_stats")
 async def callback_reset_stats_ask(callback: types.CallbackQuery):
