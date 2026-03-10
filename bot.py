@@ -3,6 +3,7 @@ import os
 import psycopg2
 import logging
 import json
+import random
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -42,6 +43,23 @@ MEALS = {
     "snack": "🍎 Перекус",
     "ai_food": "🤖 AI"
 }
+
+# Жарти для різноманітності
+SUCCESS_JOKES = [
+    "Ваш прес передає вам подяку! 😎",
+    "Можна ще з'їсти щось смачненьке, але без фанатизму! 🍰",
+    "Ідеально! Ви сьогодні просто фітнес-гуру. 🧘‍♀️",
+    "Совість чиста, калорії в нормі! ✨",
+    "Так тримати! Термінатор би вами пишався. 🤖💪"
+]
+
+FAIL_JOKES = [
+    "Ваші джинси дивляться на вас із засудженням... 👀",
+    "Будемо відпрацьовувати в залі, чи просто сховаємо ваги? 🏃‍♂️",
+    "Хтось вночі крав їжу з холодильника? 🦝",
+    "Ех, а так добре день починався... Ну нічого, завтра на дієту! 😅",
+    "Ваша фігура каже 'Ой-йой', а шлунок каже 'Дякую, бос!' 🍔"
+]
 
 # ==========================================
 # 1. БАЗА ДАНИХ (з автоматичною міграцією)
@@ -368,9 +386,11 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         if goal > 0:
             new_total = eaten_today + total_calories
             if new_total <= goal:
-                status_text = f"\n\n📊 З цією їжею ви **вписуєтесь** у норму! Залишиться: {goal - new_total} ккал."
+                joke = random.choice(SUCCESS_JOKES)
+                status_text = f"\n\n📊 З цією їжею ви **вписуєтесь** у норму! Залишиться: {goal - new_total} ккал.\n_{joke}_"
             else:
-                status_text = f"\n\n⚠️ **Увага!** Ви перевищите денну норму на {new_total - goal} ккал. (Разом за день буде {new_total} з {goal})."
+                joke = random.choice(FAIL_JOKES)
+                status_text = f"\n\n⚠️ **Овва, перебір!** Ви перевищите денну норму на {new_total - goal} ккал. (Разом за день буде {new_total} з {goal}).\n_{joke}_"
 
         text = f"🤖 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал{status_text}"
         
@@ -472,19 +492,32 @@ async def process_calories(message: types.Message, state: FSMContext):
                 
         new_total = eaten_today + calories
         
-        # Якщо є перевищення ліміту — запитуємо підтвердження
-        if goal > 0 and new_total > goal:
-            await state.update_data(pending_calories=calories)
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚠️ Так, зберегти", callback_data="confirm_cal_save")],
-                [InlineKeyboardButton(text="❌ Ні, не зберігати", callback_data="confirm_cal_cancel")]
-            ])
-            msg = f"⚠️ **Увага!**\nДодавши {calories} ккал, ви перевищите свою денну норму на {new_total - goal} ккал.\n(Разом за день: {new_total} з {goal} ккал).\n\nБажаєте все одно зберегти цей прийом їжі?"
-            await message.answer(msg, reply_markup=kb, parse_mode="Markdown")
-            await state.set_state(CalorieState.confirm_over_limit)
-            return
+        # Якщо є перевищення ліміту — запитуємо підтвердження з жартом
+        if goal > 0:
+            if new_total > goal:
+                joke = random.choice(FAIL_JOKES)
+                await state.update_data(pending_calories=calories)
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚠️ Так, зберегти", callback_data="confirm_cal_save")],
+                    [InlineKeyboardButton(text="❌ Ні, не зберігати", callback_data="confirm_cal_cancel")]
+                ])
+                msg = f"⚠️ **Тривога!**\nДодавши {calories} ккал, ви перевищите свою денну норму на {new_total - goal} ккал.\n(Разом за день: {new_total} з {goal} ккал).\n\n_{joke}_\n\nБажаєте все одно зберегти цей прийом їжі?"
+                await message.answer(msg, reply_markup=kb, parse_mode="Markdown")
+                await state.set_state(CalorieState.confirm_over_limit)
+                return
+            else:
+                joke = random.choice(SUCCESS_JOKES)
+                # Якщо все ок, зберігаємо одразу і хвалимо
+                with psycopg2.connect(DATABASE_URL) as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, date) VALUES (%s, %s, %s, %s)", 
+                                       (user_id, data['meal_type'], calories, today))
+                    conn.commit()
+                await message.answer(f"✅ Записано! Залишилось ще {goal - new_total} ккал.\n_{joke}_", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+                await state.clear()
+                return
 
-        # Якщо все ок, зберігаємо одразу
+        # Якщо ціль не задана (goal = 0), просто зберігаємо
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
                 cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, date) VALUES (%s, %s, %s, %s)", 
@@ -512,7 +545,7 @@ async def confirm_cal_save(callback: types.CallbackQuery, state: FSMContext):
                                (callback.from_user.id, meal_type, calories, today))
             conn.commit()
         await callback.message.edit_text(callback.message.text + "\n\n✅ *Збережено, незважаючи на перевищення!*", parse_mode="Markdown")
-        await callback.message.answer("Готово!", reply_markup=get_main_keyboard())
+        await callback.message.answer("Ех, один раз живемо! Записав.", reply_markup=get_main_keyboard())
     except Exception as e:
         logger.error(f"Помилка під час збереження з перевищенням: {e}")
         await callback.message.answer("Помилка при збереженні.", reply_markup=get_main_keyboard())
@@ -521,7 +554,7 @@ async def confirm_cal_save(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(CalorieState.confirm_over_limit, F.data == "confirm_cal_cancel")
 async def confirm_cal_cancel(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(callback.message.text + "\n\n❌ *Скасовано.*", parse_mode="Markdown")
-    await callback.message.answer("Дію скасовано. Калорії не додано.", reply_markup=get_main_keyboard())
+    await callback.message.answer("Сила волі перемогла! Калорії не додано. 💪", reply_markup=get_main_keyboard())
     await state.clear()
 
 # ==========================================
