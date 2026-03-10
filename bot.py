@@ -380,12 +380,12 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         ])
         
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        await state.clear() # Скидаємо стан ТІЛЬКИ в разі успішного виконання
         
     except Exception as e:
         logger.error(f"AI Error: {e}")
-        await message.answer("Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше.")
-    
-    await state.clear()
+        # НЕ скидаємо стан, повертаємо кнопку скасування, щоб користувач міг спробувати ще раз
+        await message.answer("Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:", reply_markup=get_cancel_keyboard())
 
 @dp.callback_query(F.data.startswith("aisave_"))
 async def save_ai_calories(callback: types.CallbackQuery):
