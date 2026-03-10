@@ -24,6 +24,7 @@ load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+BOT_PASSWORD = os.getenv("BOT_PASSWORD") # Новый секретный пароль для доступа
 
 if not TOKEN or not DATABASE_URL:
     logger.error("ОШИБКА: Проверьте переменные BOT_TOKEN и DATABASE_URL!")
@@ -46,31 +47,38 @@ MEALS = {
 # 1. БАЗА ДАННЫХ (с автоматической миграцией)
 # ==========================================
 def init_db():
+    conn = None
     try:
-        with psycopg2.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cursor:
-                # Базовые таблицы
-                cursor.execute('CREATE TABLE IF NOT EXISTS weight_log (id SERIAL PRIMARY KEY, user_id BIGINT, weight REAL, date TEXT)')
-                cursor.execute('CREATE TABLE IF NOT EXISTS calorie_log (id SERIAL PRIMARY KEY, user_id BIGINT, meal_type TEXT, calories INTEGER, date TEXT)')
-                cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, gender TEXT, age INTEGER, height INTEGER)')
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.autocommit = True
+        with conn.cursor() as cursor:
+            # Базовые таблицы
+            cursor.execute('CREATE TABLE IF NOT EXISTS weight_log (id SERIAL PRIMARY KEY, user_id BIGINT, weight REAL, date TEXT)')
+            cursor.execute('CREATE TABLE IF NOT EXISTS calorie_log (id SERIAL PRIMARY KEY, user_id BIGINT, meal_type TEXT, calories INTEGER, date TEXT)')
+            cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, gender TEXT, age INTEGER, height INTEGER)')
+            
+            # Авто-обновление старой таблицы users
+            cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='name';")
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE users ADD COLUMN name TEXT;")
                 
-                # Авто-обновление старой таблицы users (добавление имени и цели)
-                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='name';")
-                if not cursor.fetchone():
-                    cursor.execute("ALTER TABLE users ADD COLUMN name TEXT;")
-                    
-                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='daily_goal';")
-                if not cursor.fetchone():
-                    cursor.execute("ALTER TABLE users ADD COLUMN daily_goal INTEGER;")
-                    
-            conn.commit()
-            logger.info("БД подключена и обновлена успешно.")
+            cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='daily_goal';")
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE users ADD COLUMN daily_goal INTEGER;")
+                
+        logger.info("БД подключена и обновлена успешно.")
     except Exception as e:
         logger.error(f"Ошибка БД: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 # ==========================================
 # 2. СОСТОЯНИЯ (FSM)
 # ==========================================
+class AuthState(StatesGroup):
+    waiting_for_password = State()
+
 class RegState(StatesGroup):
     name = State()
     gender = State()
@@ -126,17 +134,34 @@ def get_goal_periods_keyboard():
 # ==========================================
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
-    # Проверяем, есть ли пользователь в БД
-    with psycopg2.connect(DATABASE_URL) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT name FROM users WHERE user_id = %s", (message.from_user.id,))
-            user = cursor.fetchone()
-            
-    if user and user[0]:
-        await message.answer(f"С возвращением, {user[0]}! 🏋️‍♂️", reply_markup=get_main_keyboard())
-    else:
-        await message.answer("Привет! Давай настроим твой профиль. Как тебя зовут?", reply_markup=ReplyKeyboardRemove())
+    await state.clear() # Сброс зависших состояний
+    try:
+        # Проверяем, есть ли пользователь в БД
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT name FROM users WHERE user_id = %s", (message.from_user.id,))
+                user = cursor.fetchone()
+                
+        if user and user[0]:
+            await message.answer(f"С возвращением, {user[0]}! 🏋️‍♂️", reply_markup=get_main_keyboard())
+        else:
+            if BOT_PASSWORD:
+                await message.answer("🔒 Бот приватный. Пожалуйста, введите пароль для доступа:", reply_markup=ReplyKeyboardRemove())
+                await state.set_state(AuthState.waiting_for_password)
+            else:
+                await message.answer("Привет! Давай настроим твой профиль. Как тебя зовут?", reply_markup=ReplyKeyboardRemove())
+                await state.set_state(RegState.name)
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке профиля (cmd_start): {e}")
+        await message.answer("⏳ Обновляю базу данных... Нажми /start еще раз через 5 секунд!")
+
+@dp.message(AuthState.waiting_for_password)
+async def process_password(message: types.Message, state: FSMContext):
+    if message.text == BOT_PASSWORD:
+        await message.answer("✅ Доступ разрешен!\n\nПривет! Давай настроим твой профиль. Как тебя зовут?")
         await state.set_state(RegState.name)
+    else:
+        await message.answer("❌ Неверный пароль. Попробуйте еще раз.")
 
 @dp.message(RegState.name)
 async def reg_name(message: types.Message, state: FSMContext):
@@ -183,23 +208,27 @@ async def reg_goal(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     today = datetime.now().date().isoformat()
     
-    with psycopg2.connect(DATABASE_URL) as conn:
-        with conn.cursor() as cursor:
-            # Сохраняем профиль
-            cursor.execute("""
-                INSERT INTO users (user_id, name, gender, age, height, daily_goal)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET 
-                name=EXCLUDED.name, gender=EXCLUDED.gender, age=EXCLUDED.age, 
-                height=EXCLUDED.height, daily_goal=EXCLUDED.daily_goal
-            """, (user_id, data['name'], data['gender'], data['age'], data['height'], daily_goal))
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                # Сохраняем профиль
+                cursor.execute("""
+                    INSERT INTO users (user_id, name, gender, age, height, daily_goal)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                    name=EXCLUDED.name, gender=EXCLUDED.gender, age=EXCLUDED.age, 
+                    height=EXCLUDED.height, daily_goal=EXCLUDED.daily_goal
+                """, (user_id, data['name'], data['gender'], data['age'], data['height'], daily_goal))
+                
+                # Сохраняем первый вес
+                cursor.execute("INSERT INTO weight_log (user_id, weight, date) VALUES (%s, %s, %s)", 
+                               (user_id, data['weight'], today))
+            conn.commit()
             
-            # Сохраняем первый вес
-            cursor.execute("INSERT INTO weight_log (user_id, weight, date) VALUES (%s, %s, %s)", 
-                           (user_id, data['weight'], today))
-        conn.commit()
-        
-    await message.answer("✅ Регистрация завершена! Теперь ты можешь полноценно пользоваться ботом.", reply_markup=get_main_keyboard())
+        await message.answer("✅ Регистрация завершена! Теперь ты можешь полноценно пользоваться ботом.", reply_markup=get_main_keyboard())
+    except Exception as e:
+        logger.error(f"Ошибка сохранения БД при регистрации: {e}")
+        await message.answer("Произошла ошибка базы данных. Попробуй нажать /start и повторить.")
     await state.clear()
 
 # ==========================================
@@ -207,25 +236,29 @@ async def reg_goal(message: types.Message, state: FSMContext):
 # ==========================================
 @dp.message(F.text == "👤 Профиль")
 async def show_profile(message: types.Message):
-    with psycopg2.connect(DATABASE_URL) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT name, gender, age, height, daily_goal FROM users WHERE user_id = %s", (message.from_user.id,))
-            u = cursor.fetchone()
-            cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY date DESC LIMIT 1", (message.from_user.id,))
-            w = cursor.fetchone()
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT name, gender, age, height, daily_goal FROM users WHERE user_id = %s", (message.from_user.id,))
+                u = cursor.fetchone()
+                cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY date DESC LIMIT 1", (message.from_user.id,))
+                w = cursor.fetchone()
 
-    if not u:
-        return await message.answer("Сначала нажми /start и пройди регистрацию!")
+        if not u:
+            return await message.answer("Сначала нажми /start и пройди регистрацию!")
 
-    weight_str = f"{w[0]} кг" if w else "Нет данных"
-    gender_str = "Мужской 👨" if u[1] == "male" else "Женский 👩"
-    
-    text = f"👤 **Профиль: {u[0]}**\n" \
-           f"Пол: {gender_str}\nВозраст: {u[2]} лет\nРост: {u[3]} см\nТекущий вес: {weight_str}\n" \
-           f"🎯 **Цель на день:** {u[4]} ккал"
-           
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎯 Изменить цель калорий", callback_data="change_goal")]])
-    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        weight_str = f"{w[0]} кг" if w else "Нет данных"
+        gender_str = "Мужской 👨" if u[1] == "male" else "Женский 👩"
+        
+        text = f"👤 **Профиль: {u[0]}**\n" \
+               f"Пол: {gender_str}\nВозраст: {u[2]} лет\nРост: {u[3]} см\nТекущий вес: {weight_str}\n" \
+               f"🎯 **Цель на день:** {u[4]} ккал"
+               
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎯 Изменить цель калорий", callback_data="change_goal")]])
+        await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Ошибка профиля: {e}")
+        await message.answer("Не удалось загрузить данные. Повтори попытку позже.")
 
 @dp.callback_query(F.data == "change_goal")
 async def change_goal_start(callback: types.CallbackQuery):
@@ -251,13 +284,17 @@ async def save_new_goal(message: types.Message, state: FSMContext):
     # Вычисляем дневную цель
     daily_goal = total_goal // days
     
-    with psycopg2.connect(DATABASE_URL) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("UPDATE users SET daily_goal = %s WHERE user_id = %s", (daily_goal, message.from_user.id))
-        conn.commit()
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE users SET daily_goal = %s WHERE user_id = %s", (daily_goal, message.from_user.id))
+            conn.commit()
 
-    period_name = {1: "день", 7: "неделю", 30: "месяц", 90: "3 месяца"}[days]
-    await message.answer(f"✅ Цель на {period_name} ({total_goal} ккал) сохранена!\nТвоя новая норма: **{daily_goal} ккал в день**.", parse_mode="Markdown")
+        period_name = {1: "день", 7: "неделю", 30: "месяц", 90: "3 месяца"}[days]
+        await message.answer(f"✅ Цель на {period_name} ({total_goal} ккал) сохранена!\nТвоя новая норма: **{daily_goal} ккал в день**.", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения цели: {e}")
+        await message.answer("Произошла ошибка. Попробуй позже.")
     await state.clear()
 
 # ==========================================
@@ -268,6 +305,17 @@ async def ai_food_start(message: types.Message, state: FSMContext):
     if not ai_client:
         return await message.answer("Функция AI пока недоступна (не настроен ключ OPENAI_API_KEY).")
     
+    # Жесткая защита: двойная проверка, что пользователь зарегистрирован (защита API)
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT name FROM users WHERE user_id = %s", (message.from_user.id,))
+                if not cursor.fetchone():
+                    return await message.answer("⛔ Нет доступа. Введите /start и авторизуйтесь.")
+    except Exception as e:
+        logger.error(f"Ошибка проверки доступа AI: {e}")
+        return await message.answer("Ошибка базы данных.")
+
     await message.answer("Опиши, что ты съел в свободной форме (например: *я съел 3 яйца, 100г хлеба и 30г сыра*):", 
                          reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
     await state.set_state(AIState.waiting_for_food_text)
@@ -319,13 +367,17 @@ async def save_ai_calories(callback: types.CallbackQuery):
     calories = int(callback.data.split("_")[1])
     today = datetime.now().date().isoformat()
     
-    with psycopg2.connect(DATABASE_URL) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, date) VALUES (%s, %s, %s, %s)", 
-                           (callback.from_user.id, "ai_food", calories, today))
-        conn.commit()
-        
-    await callback.message.edit_text(callback.message.text + "\n\n✅ *Успешно сохранено в дневник!*", parse_mode="Markdown")
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, date) VALUES (%s, %s, %s, %s)", 
+                               (callback.from_user.id, "ai_food", calories, today))
+            conn.commit()
+            
+        await callback.message.edit_text(callback.message.text + "\n\n✅ *Успешно сохранено в дневник!*", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении AI калорий: {e}")
+        await callback.message.answer("Не удалось сохранить калории в базу данных.")
 
 # ==========================================
 # 7. РУЧНОЙ ВВОД ВЕСА И КАЛОРИЙ
@@ -351,8 +403,8 @@ async def process_weight(message: types.Message, state: FSMContext):
             conn.commit()
         await message.answer(f"✅ Вес {weight} кг записан.", reply_markup=get_main_keyboard())
         await state.clear()
-    except:
-        await message.answer("Введите число.")
+    except Exception:
+        await message.answer("Введите корректное число.")
 
 @dp.message(F.text == "🍔 Внести калории")
 async def btn_add_calories(message: types.Message):
@@ -379,13 +431,17 @@ async def process_calories(message: types.Message, state: FSMContext):
     data = await state.get_data()
     today = datetime.now().date().isoformat()
     
-    with psycopg2.connect(DATABASE_URL) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, date) VALUES (%s, %s, %s, %s)", 
-                           (message.from_user.id, data['meal_type'], calories, today))
-        conn.commit()
-        
-    await message.answer("✅ Записано!", reply_markup=get_main_keyboard())
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, date) VALUES (%s, %s, %s, %s)", 
+                               (message.from_user.id, data['meal_type'], calories, today))
+            conn.commit()
+            
+        await message.answer("✅ Записано!", reply_markup=get_main_keyboard())
+    except Exception as e:
+        logger.error(f"Ошибка ручного добавления калорий: {e}")
+        await message.answer("Не удалось записать в базу данных.")
     await state.clear()
 
 # ==========================================
@@ -404,31 +460,39 @@ async def callback_stat_today(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     today = datetime.now().date().isoformat()
     
-    with psycopg2.connect(DATABASE_URL) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT daily_goal FROM users WHERE user_id = %s", (user_id,))
-            u = cursor.fetchone()
-            cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
-            e = cursor.fetchone()[0] or 0
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT daily_goal FROM users WHERE user_id = %s", (user_id,))
+                u = cursor.fetchone()
+                cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
+                e = cursor.fetchone()[0] or 0
 
-    if not u:
-        return await callback.message.edit_text("Сначала пройди регистрацию в профиле!")
+        if not u:
+            return await callback.message.edit_text("Сначала пройди регистрацию в профиле!")
 
-    goal = u[0]
-    res = f"📊 **Сводка на сегодня:**\n🍽 Съедено: {e} ккал\n🎯 Твоя норма: {goal} ккал\n"
-    res += f"📉 Осталось: {goal - e} ккал" if goal >= e else f"⚠️ Перебор: {e - goal} ккал!"
-    
-    await callback.message.edit_text(res, parse_mode="Markdown")
+        goal = u[0]
+        res = f"📊 **Сводка на сегодня:**\n🍽 Съедено: {e} ккал\n🎯 Твоя норма: {goal} ккал\n"
+        res += f"📉 Осталось: {goal - e} ккал" if goal >= e else f"⚠️ Перебор: {e - goal} ккал!"
+        
+        await callback.message.edit_text(res, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Ошибка статистики за сегодня: {e}")
+        await callback.message.answer("Ошибка при расчете статистики.")
 
 @dp.callback_query(F.data == "stat_7days")
 async def callback_stat_7days(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     week_ago = (datetime.now() - timedelta(days=7)).date().isoformat()
-    with psycopg2.connect(DATABASE_URL) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date >= %s", (user_id, week_ago))
-            total = cursor.fetchone()[0] or 0
-    await callback.message.edit_text(f"🔥 Калории за последние 7 дней: **{total} ккал**", parse_mode="Markdown")
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date >= %s", (user_id, week_ago))
+                total = cursor.fetchone()[0] or 0
+        await callback.message.edit_text(f"🔥 Калории за последние 7 дней: **{total} ккал**", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Ошибка статистики за 7 дней: {e}")
+        await callback.message.answer("Ошибка при расчете статистики.")
 
 # ==========================================
 # 9. ЗАПУСК БОТА
