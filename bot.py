@@ -95,6 +95,7 @@ class WeightState(StatesGroup):
 
 class CalorieState(StatesGroup):
     waiting_for_calories = State()
+    confirm_over_limit = State()
 
 class AIState(StatesGroup):
     waiting_for_food_text = State()
@@ -348,7 +349,30 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         breakdown = result.get("breakdown", "Немає опису")
         total_calories = int(result.get("total", 0))
 
-        text = f"🤖 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал"
+        # Перевіряємо денний ліміт
+        user_id = message.from_user.id
+        today = datetime.now().date().isoformat()
+        goal = 0
+        eaten_today = 0
+        
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT daily_goal FROM users WHERE user_id = %s", (user_id,))
+                u = cursor.fetchone()
+                if u and u[0]: goal = u[0]
+                cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
+                e = cursor.fetchone()
+                if e and e[0]: eaten_today = e[0]
+
+        status_text = ""
+        if goal > 0:
+            new_total = eaten_today + total_calories
+            if new_total <= goal:
+                status_text = f"\n\n📊 З цією їжею ви **вписуєтесь** у норму! Залишиться: {goal - new_total} ккал."
+            else:
+                status_text = f"\n\n⚠️ **Увага!** Ви перевищите денну норму на {new_total - goal} ккал. (Разом за день буде {new_total} з {goal})."
+
+        text = f"🤖 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал{status_text}"
         
         # Кнопка для збереження
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -430,19 +454,74 @@ async def process_calories(message: types.Message, state: FSMContext):
     
     calories = int(message.text)
     data = await state.get_data()
+    user_id = message.from_user.id
     today = datetime.now().date().isoformat()
     
     try:
+        # Перевіряємо поточний ліміт
+        goal = 0
+        eaten_today = 0
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT daily_goal FROM users WHERE user_id = %s", (user_id,))
+                u = cursor.fetchone()
+                if u and u[0]: goal = u[0]
+                cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
+                e = cursor.fetchone()
+                if e and e[0]: eaten_today = e[0]
+                
+        new_total = eaten_today + calories
+        
+        # Якщо є перевищення ліміту — запитуємо підтвердження
+        if goal > 0 and new_total > goal:
+            await state.update_data(pending_calories=calories)
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚠️ Так, зберегти", callback_data="confirm_cal_save")],
+                [InlineKeyboardButton(text="❌ Ні, не зберігати", callback_data="confirm_cal_cancel")]
+            ])
+            msg = f"⚠️ **Увага!**\nДодавши {calories} ккал, ви перевищите свою денну норму на {new_total - goal} ккал.\n(Разом за день: {new_total} з {goal} ккал).\n\nБажаєте все одно зберегти цей прийом їжі?"
+            await message.answer(msg, reply_markup=kb, parse_mode="Markdown")
+            await state.set_state(CalorieState.confirm_over_limit)
+            return
+
+        # Якщо все ок, зберігаємо одразу
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
                 cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, date) VALUES (%s, %s, %s, %s)", 
-                               (message.from_user.id, data['meal_type'], calories, today))
+                               (user_id, data['meal_type'], calories, today))
             conn.commit()
             
         await message.answer("✅ Записано!", reply_markup=get_main_keyboard())
     except Exception as e:
         logger.error(f"Помилка ручного додавання калорій: {e}")
         await message.answer("Не вдалося записати в базу даних.")
+    await state.clear()
+
+# Обробники кнопок перевищення ліміту
+@dp.callback_query(CalorieState.confirm_over_limit, F.data == "confirm_cal_save")
+async def confirm_cal_save(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    calories = data.get('pending_calories')
+    meal_type = data.get('meal_type')
+    today = datetime.now().date().isoformat()
+    
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, date) VALUES (%s, %s, %s, %s)", 
+                               (callback.from_user.id, meal_type, calories, today))
+            conn.commit()
+        await callback.message.edit_text(callback.message.text + "\n\n✅ *Збережено, незважаючи на перевищення!*", parse_mode="Markdown")
+        await callback.message.answer("Готово!", reply_markup=get_main_keyboard())
+    except Exception as e:
+        logger.error(f"Помилка під час збереження з перевищенням: {e}")
+        await callback.message.answer("Помилка при збереженні.", reply_markup=get_main_keyboard())
+    await state.clear()
+
+@dp.callback_query(CalorieState.confirm_over_limit, F.data == "confirm_cal_cancel")
+async def confirm_cal_cancel(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(callback.message.text + "\n\n❌ *Скасовано.*", parse_mode="Markdown")
+    await callback.message.answer("Дію скасовано. Калорії не додано.", reply_markup=get_main_keyboard())
     await state.clear()
 
 # ==========================================
