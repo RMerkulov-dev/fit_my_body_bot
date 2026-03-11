@@ -389,11 +389,11 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
             
         result = json.loads(content)
         
-        # Вилучаємо текст і повністю очищаємо його від небезпечних маркдаун-символів (*, _, `)
+        # Вилучаємо текст і повністю очищаємо його від небезпечних маркдаун-символів
         explanation = result.get("explanation", "Розрахунок завершено.")
         explanation = explanation.replace("*", "").replace("_", "").replace("`", "")
         
-        # Безпечне вилучення цифр
+        # Безпечне вилучення цифр (якщо ШІ надіслав текст замість числа)
         rec_cal_raw = str(result.get("recommended_calories", 2000))
         digits = re.findall(r'\d+', rec_cal_raw)
         rec_cal = int(digits[0]) if digits else 2000
@@ -425,7 +425,7 @@ async def apply_ai_goal(callback: types.CallbackQuery):
         await callback.message.answer("Не вдалося зберегти мету.")
 
 # ==========================================
-# 7. ДОДАВАННЯ ЇЖІ ЧЕРЕЗ AI ТА ВАГИ
+# 7. ДОДАВАННЯ ЇЖІ (ДИНАМІЧНО: ТЕКСТ АБО ЧИСЛО)
 # ==========================================
 @dp.message(F.text == "✖️ Скасувати")
 async def cancel_action(message: types.Message, state: FSMContext):
@@ -466,7 +466,7 @@ async def ai_food_start(message: types.Message, state: FSMContext):
         logger.error(f"Помилка перевірки доступу AI: {e}")
         return await message.answer("Помилка бази даних.")
 
-    await message.answer("Опиши, що ти з'їв у вільній формі (наприклад: *я з'їв 3 яйця, 100г хліба і 30г сиру*):", 
+    await message.answer("Опиши, що ти з'їв (наприклад: _я з'їв 3 яйця і хліб_)\n\n⚡ **АБО** просто напиши число калорій, якщо знаєш його (наприклад: _450_ або _450 ккал_):", 
                          reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
     await state.set_state(AIState.waiting_for_food_text)
 
@@ -476,77 +476,94 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         await state.clear()
         return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
 
-    await message.answer("⏳ Аналізую продукти... Зачекай пару секунд.", reply_markup=get_main_keyboard())
+    text_input = message.text.strip()
     
-    prompt = f"""
-    Ти професійний дієтолог. Користувач з'їв наступне: "{message.text}".
-    Оціни приблизну калорійність кожного продукту та порахуй загальну суму.
-    Твоя відповідь має бути СУВОРО у форматі JSON з двома ключами:
-    "breakdown" - рядковий опис розрахунку (кожен продукт з нового рядка).
-    "total" - тільки ціле число (загальна сума калорій).
-    """
+    # Регулярний вираз перевіряє, чи ввів користувач ТІЛЬКИ число (або число + слово "ккал"/"kcal")
+    match_manual = re.fullmatch(r'(\d+)\s*(ккал|kcal|калорій|калорий)?', text_input.lower())
+    
+    is_manual = bool(match_manual)
+    total_calories = 0
+    breakdown = ""
 
-    try:
-        response = await ai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            response_format={ "type": "json_object" },
-            messages=[{"role": "system", "content": prompt}]
-        )
+    if is_manual:
+        # Користувач ввів просто число
+        total_calories = int(match_manual.group(1))
+        # Одразу відновлюємо головну клавіатуру (інакше вона б пропала)
+        await message.answer("⚡ Миттєва обробка...", reply_markup=get_main_keyboard())
+    else:
+        # Користувач ввів текст їжі - підключаємо OpenAI
+        await message.answer("⏳ Аналізую продукти... Зачекай пару секунд.", reply_markup=get_main_keyboard())
         
-        # Очищення відповіді від можливих маркдаун-тегів (часта помилка AI)
-        content = response.choices[0].message.content
-        if content.startswith('```json'):
-            content = content.replace('```json', '').replace('```', '').strip()
-        elif content.startswith('```'):
-            content = content.replace('```', '').strip()
+        prompt = f"""
+        Ти професійний дієтолог. Користувач з'їв наступне: "{text_input}".
+        Оціни приблизну калорійність кожного продукту та порахуй загальну суму.
+        Твоя відповідь має бути СУВОРО у форматі JSON з двома ключами:
+        "breakdown" - рядковий опис розрахунку (кожен продукт з нового рядка).
+        "total" - тільки ціле число (загальна сума калорій).
+        """
+
+        try:
+            response = await ai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                response_format={ "type": "json_object" },
+                messages=[{"role": "system", "content": prompt}]
+            )
             
-        result = json.loads(content)
-        
-        # Вилучаємо текст і повністю очищаємо його від небезпечних маркдаун-символів
-        breakdown = result.get("breakdown", "Немає опису")
-        breakdown = breakdown.replace("*", "").replace("_", "").replace("`", "")
-        
-        # Безпечне вилучення цифр
-        total_raw = str(result.get("total", 0))
-        digits = re.findall(r'\d+', total_raw)
-        total_calories = int(digits[0]) if digits else 0
+            content = response.choices[0].message.content
+            if content.startswith('```json'):
+                content = content.replace('```json', '').replace('```', '').strip()
+            elif content.startswith('```'):
+                content = content.replace('```', '').strip()
+                
+            result = json.loads(content)
+            breakdown = result.get("breakdown", "Немає опису")
+            breakdown = breakdown.replace("*", "").replace("_", "").replace("`", "")
+            
+            total_raw = str(result.get("total", 0))
+            digits = re.findall(r'\d+', total_raw)
+            total_calories = int(digits[0]) if digits else 0
+            
+        except Exception as e:
+            logger.error(f"AI Error: {e}")
+            return await message.answer(f"✖️ Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
 
-        user_id = message.from_user.id
-        today = datetime.now().date().isoformat()
-        goal = 0
-        eaten_today = 0
-        
-        with psycopg2.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT daily_goal FROM users WHERE user_id = %s", (user_id,))
-                u = cursor.fetchone()
-                if u and u[0]: goal = u[0]
-                cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
-                e = cursor.fetchone()
-                if e and e[0]: eaten_today = e[0]
+    # Спільна логіка для лімітів та збереження (для обох варіантів)
+    user_id = message.from_user.id
+    today = datetime.now().date().isoformat()
+    goal = 0
+    eaten_today = 0
+    
+    with psycopg2.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT daily_goal FROM users WHERE user_id = %s", (user_id,))
+            u = cursor.fetchone()
+            if u and u[0]: goal = u[0]
+            cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
+            e = cursor.fetchone()
+            if e and e[0]: eaten_today = e[0]
 
-        status_text = ""
-        if goal > 0:
-            new_total = eaten_today + total_calories
-            if new_total <= goal:
-                joke = random.choice(SUCCESS_JOKES)
-                status_text = f"\n\n📊 З цією їжею ви **вписуєтесь** у норму! Залишиться: {goal - new_total} ккал.\n_{joke}_"
-            else:
-                joke = random.choice(FAIL_JOKES)
-                status_text = f"\n\n❕ **Овва, перебір!** Ви перевищите денну норму на {new_total - goal} ккал. (Разом за день буде {new_total} з {goal}).\n_{joke}_"
+    status_text = ""
+    if goal > 0:
+        new_total = eaten_today + total_calories
+        if new_total <= goal:
+            joke = random.choice(SUCCESS_JOKES)
+            status_text = f"\n\n📊 З цією їжею ви **вписуєтесь** у норму! Залишиться: {goal - new_total} ккал.\n_{joke}_"
+        else:
+            joke = random.choice(FAIL_JOKES)
+            status_text = f"\n\n❕ **Овва, перебір!** Ви перевищите денну норму на {new_total - goal} ккал. (Разом за день буде {new_total} з {goal}).\n_{joke}_"
 
+    # Формуємо текст залежно від того, яким шляхом ми сюди прийшли
+    if is_manual:
+        text = f"⚡ **Швидке введення:**\n\n**Разом:** {total_calories} ккал{status_text}"
+    else:
         text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал{status_text}"
-        
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"📥 Зберегти {total_calories} ккал", callback_data=f"aisave_{total_calories}")]
-        ])
-        
-        await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-        await state.clear()
-        
-    except Exception as e:
-        logger.error(f"AI Error: {e}")
-        await message.answer(f"✖️ Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📥 Зберегти {total_calories} ккал", callback_data=f"aisave_{total_calories}")]
+    ])
+    
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await state.clear()
 
 @dp.callback_query(F.data.startswith("aisave_"))
 async def save_ai_calories(callback: types.CallbackQuery):
