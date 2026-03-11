@@ -42,7 +42,7 @@ SUCCESS_JOKES = [
     "Ваш прес передає вам подяку! 🕶",
     "Можна ще з'їсти щось смачненьке, але без фанатизму! 🧁",
     "Ідеально! Ви сьогодні просто фітнес-гуру. 🧘‍♀️",
-    "Совість чиста, калорії в нормі! ✨",
+    "Совість чиста, макроси в нормі! ✨",
     "Так тримати! Термінатор би вами пишався. 🦾"
 ]
 
@@ -53,6 +53,11 @@ FAIL_JOKES = [
     "Ех, а так добре день починався... Ну нічого, завтра на дієту! 🫠",
     "Ваша фігура каже 'Ой-йой', а шлунок каже 'Дякую, бос!' 🍟"
 ]
+
+def safe_int(val, default=0):
+    if val is None: return default
+    digits = re.findall(r'-?\d+', str(val))
+    return int(digits[0]) if digits else default
 
 # ==========================================
 # 1. БАЗА ДАНИХ (з автоматичною міграцією)
@@ -68,16 +73,22 @@ def init_db():
             cursor.execute('CREATE TABLE IF NOT EXISTS calorie_log (id SERIAL PRIMARY KEY, user_id BIGINT, meal_type TEXT, calories INTEGER, date TEXT)')
             cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, gender TEXT, age INTEGER, height INTEGER)')
             
-            # Авто-оновлення старої таблиці users
-            cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='name';")
-            if not cursor.fetchone():
-                cursor.execute("ALTER TABLE users ADD COLUMN name TEXT;")
+            # Авто-оновлення таблиць (додаємо колонки БЖУ)
+            cols_to_add_users = ['name TEXT', 'daily_goal INTEGER', 'daily_protein INTEGER DEFAULT 0', 'daily_fat INTEGER DEFAULT 0', 'daily_carbs INTEGER DEFAULT 0']
+            for col_def in cols_to_add_users:
+                col_name = col_def.split()[0]
+                cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='{col_name}';")
+                if not cursor.fetchone():
+                    cursor.execute(f"ALTER TABLE users ADD COLUMN {col_def};")
+            
+            cols_to_add_log = ['protein INTEGER DEFAULT 0', 'fat INTEGER DEFAULT 0', 'carbs INTEGER DEFAULT 0']
+            for col_def in cols_to_add_log:
+                col_name = col_def.split()[0]
+                cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='calorie_log' AND column_name='{col_name}';")
+                if not cursor.fetchone():
+                    cursor.execute(f"ALTER TABLE calorie_log ADD COLUMN {col_def};")
                 
-            cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='daily_goal';")
-            if not cursor.fetchone():
-                cursor.execute("ALTER TABLE users ADD COLUMN daily_goal INTEGER;")
-                
-        logger.info("БД підключена і оновлена успішно.")
+        logger.info("БД підключена і оновлена успішно (БЖУ додано).")
     except Exception as e:
         logger.error(f"Помилка БД: {e}")
     finally:
@@ -206,7 +217,7 @@ async def reg_weight(message: types.Message, state: FSMContext):
     try:
         weight = float(message.text.replace(',', '.'))
         await state.update_data(weight=weight)
-        await message.answer("І останнє: яка у тебе мета по калоріях **на день**?\n*(Напиши число, наприклад 2000, або напиши '0', а потім розрахуєш через AI)*", parse_mode="Markdown")
+        await message.answer("І останнє: яка у тебе мета по калоріях **на день**?\n*(Напиши число, наприклад 2000, або напиши '0', а потім розрахуєш точніше через AI)*", parse_mode="Markdown")
         await state.set_state(RegState.goal)
     except ValueError:
         await message.answer("Введи коректне число (наприклад, 70.5):")
@@ -216,6 +227,12 @@ async def reg_goal(message: types.Message, state: FSMContext):
     if not message.text.isdigit(): return await message.answer("Введи число:")
     data = await state.get_data()
     daily_goal = int(message.text)
+    
+    # Базовий розподіл БЖУ для ручного вводу (30% Білки, 30% Жири, 40% Вуглеводи)
+    daily_p = int((daily_goal * 0.3) / 4) if daily_goal > 0 else 0
+    daily_f = int((daily_goal * 0.3) / 9) if daily_goal > 0 else 0
+    daily_c = int((daily_goal * 0.4) / 4) if daily_goal > 0 else 0
+    
     user_id = message.from_user.id
     today = datetime.now().date().isoformat()
     
@@ -223,12 +240,13 @@ async def reg_goal(message: types.Message, state: FSMContext):
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    INSERT INTO users (user_id, name, gender, age, height, daily_goal)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    INSERT INTO users (user_id, name, gender, age, height, daily_goal, daily_protein, daily_fat, daily_carbs)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (user_id) DO UPDATE SET 
                     name=EXCLUDED.name, gender=EXCLUDED.gender, age=EXCLUDED.age, 
-                    height=EXCLUDED.height, daily_goal=EXCLUDED.daily_goal
-                """, (user_id, data['name'], data['gender'], data['age'], data['height'], daily_goal))
+                    height=EXCLUDED.height, daily_goal=EXCLUDED.daily_goal,
+                    daily_protein=EXCLUDED.daily_protein, daily_fat=EXCLUDED.daily_fat, daily_carbs=EXCLUDED.daily_carbs
+                """, (user_id, data['name'], data['gender'], data['age'], data['height'], daily_goal, daily_p, daily_f, daily_c))
                 
                 cursor.execute("INSERT INTO weight_log (user_id, weight, date) VALUES (%s, %s, %s)", 
                                (user_id, data['weight'], today))
@@ -248,7 +266,7 @@ async def show_profile(message: types.Message):
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT name, gender, age, height, daily_goal FROM users WHERE user_id = %s", (message.from_user.id,))
+                cursor.execute("SELECT name, gender, age, height, daily_goal, daily_protein, daily_fat, daily_carbs FROM users WHERE user_id = %s", (message.from_user.id,))
                 u = cursor.fetchone()
                 cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY date DESC LIMIT 1", (message.from_user.id,))
                 w = cursor.fetchone()
@@ -259,9 +277,12 @@ async def show_profile(message: types.Message):
         weight_str = f"{w[0]} кг" if w else "Немає даних"
         gender_str = "Чоловіча 🧍‍♂️" if u[1] == "male" else "Жіноча 🧍‍♀️"
         
+        goal, p, f, c = u[4] or 0, u[5] or 0, u[6] or 0, u[7] or 0
+        
         text = f"🪪 **Профіль: {u[0]}**\n" \
-               f"Стать: {gender_str}\nВік: {u[2]} років\nЗріст: {u[3]} см\nПоточна вага: {weight_str}\n" \
-               f"🎯 **Мета на день:** {u[4]} ккал"
+               f"Стать: {gender_str}\nВік: {u[2]} років\nЗріст: {u[3]} см\nПоточна вага: {weight_str}\n\n" \
+               f"🎯 **Мета на день:** {goal} ккал\n" \
+               f"🥩 Білки: {p} г | 🧈 Жири: {f} г | 🍞 Вуглеводи: {c} г"
                
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚙️ Змінити мету вручну", callback_data="change_goal")]])
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
@@ -279,7 +300,7 @@ async def process_goal_period(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(goal_days=days)
     
     period_name = {1: "день", 7: "тиждень", 30: "місяць", 90: "3 місяці"}[days]
-    await callback.message.edit_text(f"Введи бажану кількість калорій на **{period_name}**:\n*(Я сам розрахую з цього твою добову норму)*", parse_mode="Markdown")
+    await callback.message.edit_text(f"Введи бажану кількість калорій на **{period_name}**:\n*(Я сам розрахую базові БЖУ з цього числа)*", parse_mode="Markdown")
     await state.set_state(GoalState.waiting_for_goal)
 
 @dp.message(GoalState.waiting_for_goal)
@@ -291,28 +312,32 @@ async def save_new_goal(message: types.Message, state: FSMContext):
     total_goal = int(message.text)
     daily_goal = total_goal // days
     
+    daily_p = int((daily_goal * 0.3) / 4)
+    daily_f = int((daily_goal * 0.3) / 9)
+    daily_c = int((daily_goal * 0.4) / 4)
+    
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("UPDATE users SET daily_goal = %s WHERE user_id = %s", (daily_goal, message.from_user.id))
+                cursor.execute("UPDATE users SET daily_goal = %s, daily_protein = %s, daily_fat = %s, daily_carbs = %s WHERE user_id = %s", 
+                               (daily_goal, daily_p, daily_f, daily_c, message.from_user.id))
             conn.commit()
 
         period_name = {1: "день", 7: "тиждень", 30: "місяць", 90: "3 місяці"}[days]
-        await message.answer(f"✔️ Мета на {period_name} ({total_goal} ккал) збережена!\nТвоя нова норма: **{daily_goal} ккал на день**.", parse_mode="Markdown")
+        await message.answer(f"✔️ Мета на {period_name} збережена!\nТвоя нова норма: **{daily_goal} ккал** (Б:{daily_p} Ж:{daily_f} В:{daily_c}).", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Помилка збереження мети: {e}")
         await message.answer("Сталася помилка. Спробуй пізніше.")
     await state.clear()
 
 # ==========================================
-# 6. РОЗУМНИЙ РОЗРАХУНОК ЦІЛІ З AI (НОВЕ)
+# 6. РОЗУМНИЙ РОЗРАХУНОК ЦІЛІ ТА БЖУ З AI
 # ==========================================
 @dp.message(F.text == "✨ Мета Kcal AI")
 async def ai_calc_goal_start(message: types.Message, state: FSMContext):
     if not ai_client:
         return await message.answer("Функція AI поки недоступна (не налаштовано ключ OPENAI_API_KEY).")
     
-    # Перевіряємо чи є у користувача профіль
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
@@ -368,10 +393,13 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
         Фізична активність: "{workouts}".
         Мета клієнта: "{user_goal}".
 
-        Завдання: розрахуй ідеальну добову норму калорій. Якщо мета передбачає схуднення, обов'язково врахуй безпечний дефіцит калорій. Якщо набір маси - профіцит.
+        Завдання: розрахуй ідеальну добову норму калорій та розподіл макронутрієнтів (БЖУ). Якщо мета передбачає схуднення, обов'язково врахуй безпечний дефіцит калорій. Якщо набір маси - профіцит.
         Відповідь має бути СУВОРО у форматі JSON:
         "explanation" - текстове пояснення твого розрахунку та поради (2-3 речення),
-        "recommended_calories" - ціле число (рекомендована норма калорій на день).
+        "recommended_calories" - ціле число (норма калорій),
+        "recommended_protein" - ціле число (білки в грамах),
+        "recommended_fat" - ціле число (жири в грамах),
+        "recommended_carbs" - ціле число (вуглеводи в грамах).
         """
 
         response = await ai_client.chat.completions.create(
@@ -380,7 +408,6 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
             messages=[{"role": "system", "content": prompt}]
         )
         
-        # Очищення відповіді від можливих маркдаун-тегів (часта помилка AI)
         content = response.choices[0].message.content
         if content.startswith('```json'):
             content = content.replace('```json', '').replace('```', '').strip()
@@ -389,19 +416,20 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
             
         result = json.loads(content)
         
-        # Вилучаємо текст і повністю очищаємо його від небезпечних маркдаун-символів
         explanation = result.get("explanation", "Розрахунок завершено.")
         explanation = explanation.replace("*", "").replace("_", "").replace("`", "")
         
-        # Безпечне вилучення цифр (якщо ШІ надіслав текст замість числа)
-        rec_cal_raw = str(result.get("recommended_calories", 2000))
-        digits = re.findall(r'\d+', rec_cal_raw)
-        rec_cal = int(digits[0]) if digits else 2000
+        rec_cal = safe_int(result.get("recommended_calories", 2000))
+        rec_p = safe_int(result.get("recommended_protein", 0))
+        rec_f = safe_int(result.get("recommended_fat", 0))
+        rec_c = safe_int(result.get("recommended_carbs", 0))
 
-        text = f"✨ **Висновок AI-Дієтолога:**\n\n{explanation}\n\n🎯 **Рекомендована норма:** {rec_cal} ккал/день."
+        text = f"✨ **Висновок AI-Дієтолога:**\n\n{explanation}\n\n🎯 **Рекомендована норма:** {rec_cal} ккал\n🥩 Білки: {rec_p}г | 🧈 Жири: {rec_f}г | 🍞 Вугл: {rec_c}г"
         
+        # Передаємо всі параметри в колбек
+        callback_string = f"setaigoal_{rec_cal}_{rec_p}_{rec_f}_{rec_c}"
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"✔️ Встановити {rec_cal} ккал як мету", callback_data=f"setaigoal_{rec_cal}")]
+            [InlineKeyboardButton(text=f"✔️ Встановити цю мету", callback_data=callback_string)]
         ])
         
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
@@ -413,11 +441,17 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("setaigoal_"))
 async def apply_ai_goal(callback: types.CallbackQuery):
-    daily_goal = int(callback.data.split("_")[1])
+    parts = callback.data.split("_")
+    daily_goal = int(parts[1])
+    daily_p = int(parts[2])
+    daily_f = int(parts[3])
+    daily_c = int(parts[4])
+    
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("UPDATE users SET daily_goal = %s WHERE user_id = %s", (daily_goal, callback.from_user.id))
+                cursor.execute("UPDATE users SET daily_goal = %s, daily_protein = %s, daily_fat = %s, daily_carbs = %s WHERE user_id = %s", 
+                               (daily_goal, daily_p, daily_f, daily_c, callback.from_user.id))
             conn.commit()
         await callback.message.edit_text(callback.message.text + "\n\n✔️ *Мета успішно оновлена!*", parse_mode="Markdown")
     except Exception as e:
@@ -425,7 +459,7 @@ async def apply_ai_goal(callback: types.CallbackQuery):
         await callback.message.answer("Не вдалося зберегти мету.")
 
 # ==========================================
-# 7. ДОДАВАННЯ ЇЖІ (ДИНАМІЧНО: ТЕКСТ АБО ЧИСЛО)
+# 7. ДОДАВАННЯ ЇЖІ (БЖУ + КАЛОРІЇ)
 # ==========================================
 @dp.message(F.text == "✖️ Скасувати")
 async def cancel_action(message: types.Message, state: FSMContext):
@@ -463,10 +497,9 @@ async def ai_food_start(message: types.Message, state: FSMContext):
                 if not cursor.fetchone():
                     return await message.answer("❕ Немає доступу. Введіть /start і авторизуйтесь.")
     except Exception as e:
-        logger.error(f"Помилка перевірки доступу AI: {e}")
         return await message.answer("Помилка бази даних.")
 
-    await message.answer("Опиши, що ти з'їв (наприклад: _я з'їв 3 яйця і хліб_)\n\n⚡ **АБО** просто напиши число калорій, якщо знаєш його (наприклад: _450_ або _450 ккал_):", 
+    await message.answer("Опиши, що ти з'їв (наприклад: _я з'їв 3 яйця і хліб_)\n\n⚡ **АБО** просто напиши число калорій, якщо знаєш його (БЖУ тоді запишуться як нулі):", 
                          reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
     await state.set_state(AIState.waiting_for_food_text)
 
@@ -477,29 +510,27 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
 
     text_input = message.text.strip()
-    
-    # Регулярний вираз перевіряє, чи ввів користувач ТІЛЬКИ число (або число + слово "ккал"/"kcal")
     match_manual = re.fullmatch(r'(\d+)\s*(ккал|kcal|калорій|калорий)?', text_input.lower())
     
     is_manual = bool(match_manual)
-    total_calories = 0
+    total_calories, total_p, total_f, total_c = 0, 0, 0, 0
     breakdown = ""
 
     if is_manual:
-        # Користувач ввів просто число
         total_calories = int(match_manual.group(1))
-        # Одразу відновлюємо головну клавіатуру (інакше вона б пропала)
         await message.answer("⚡ Миттєва обробка...", reply_markup=get_main_keyboard())
     else:
-        # Користувач ввів текст їжі - підключаємо OpenAI
-        await message.answer("⏳ Аналізую продукти... Зачекай пару секунд.", reply_markup=get_main_keyboard())
+        await message.answer("⏳ Аналізую продукти та БЖУ... Зачекай пару секунд.", reply_markup=get_main_keyboard())
         
         prompt = f"""
         Ти професійний дієтолог. Користувач з'їв наступне: "{text_input}".
-        Оціни приблизну калорійність кожного продукту та порахуй загальну суму.
-        Твоя відповідь має бути СУВОРО у форматі JSON з двома ключами:
-        "breakdown" - рядковий опис розрахунку (кожен продукт з нового рядка).
-        "total" - тільки ціле число (загальна сума калорій).
+        Оціни калорійність та БЖУ (білки, жири, вуглеводи) всіх продуктів і порахуй загальну суму.
+        Твоя відповідь має бути СУВОРО у форматі JSON:
+        "breakdown" - рядковий опис розрахунку,
+        "total_calories" - ціле число (сума калорій),
+        "total_protein" - ціле число (білки в грамах),
+        "total_fat" - ціле число (жири в грамах),
+        "total_carbs" - ціле число (вуглеводи в грамах).
         """
 
         try:
@@ -519,15 +550,15 @@ async def ai_food_process(message: types.Message, state: FSMContext):
             breakdown = result.get("breakdown", "Немає опису")
             breakdown = breakdown.replace("*", "").replace("_", "").replace("`", "")
             
-            total_raw = str(result.get("total", 0))
-            digits = re.findall(r'\d+', total_raw)
-            total_calories = int(digits[0]) if digits else 0
+            total_calories = safe_int(result.get("total_calories", 0))
+            total_p = safe_int(result.get("total_protein", 0))
+            total_f = safe_int(result.get("total_fat", 0))
+            total_c = safe_int(result.get("total_carbs", 0))
             
         except Exception as e:
             logger.error(f"AI Error: {e}")
             return await message.answer(f"✖️ Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
 
-    # Спільна логіка для лімітів та збереження (для обох варіантів)
     user_id = message.from_user.id
     today = datetime.now().date().isoformat()
     goal = 0
@@ -550,16 +581,16 @@ async def ai_food_process(message: types.Message, state: FSMContext):
             status_text = f"\n\n📊 З цією їжею ви **вписуєтесь** у норму! Залишиться: {goal - new_total} ккал.\n_{joke}_"
         else:
             joke = random.choice(FAIL_JOKES)
-            status_text = f"\n\n❕ **Овва, перебір!** Ви перевищите денну норму на {new_total - goal} ккал. (Разом за день буде {new_total} з {goal}).\n_{joke}_"
+            status_text = f"\n\n❕ **Овва, перебір!** Ви перевищите денну норму на {new_total - goal} ккал.\n_{joke}_"
 
-    # Формуємо текст залежно від того, яким шляхом ми сюди прийшли
     if is_manual:
         text = f"⚡ **Швидке введення:**\n\n**Разом:** {total_calories} ккал{status_text}"
     else:
-        text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал{status_text}"
+        text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал (Б:{total_p} Ж:{total_f} В:{total_c}){status_text}"
     
+    callback_string = f"aisave_{total_calories}_{total_p}_{total_f}_{total_c}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📥 Зберегти {total_calories} ккал", callback_data=f"aisave_{total_calories}")]
+        [InlineKeyboardButton(text=f"📥 Зберегти", callback_data=callback_string)]
     ])
     
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
@@ -567,14 +598,19 @@ async def ai_food_process(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("aisave_"))
 async def save_ai_calories(callback: types.CallbackQuery):
-    calories = int(callback.data.split("_")[1])
+    parts = callback.data.split("_")
+    calories = int(parts[1])
+    p = int(parts[2]) if len(parts) > 2 else 0
+    f = int(parts[3]) if len(parts) > 3 else 0
+    c = int(parts[4]) if len(parts) > 4 else 0
+    
     today = datetime.now().date().isoformat()
     
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, date) VALUES (%s, %s, %s, %s)", 
-                               (callback.from_user.id, "ai_food", calories, today))
+                cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, protein, fat, carbs, date) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
+                               (callback.from_user.id, "ai_food", calories, p, f, c, today))
             conn.commit()
             
         await callback.message.edit_text(callback.message.text + "\n\n✔️ *Успішно збережено в щоденник!*", parse_mode="Markdown")
@@ -583,7 +619,7 @@ async def save_ai_calories(callback: types.CallbackQuery):
         await callback.message.answer("Не вдалося зберегти калорії в базу даних.")
 
 # ==========================================
-# 8. СТАТИСТИКА
+# 8. СТАТИСТИКА (З ОНОВЛЕНИМИ БЖУ)
 # ==========================================
 @dp.message(F.text == "📊 Статистика")
 async def btn_statistics(message: types.Message):
@@ -603,17 +639,24 @@ async def callback_stat_today(callback: types.CallbackQuery):
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT daily_goal FROM users WHERE user_id = %s", (user_id,))
+                cursor.execute("SELECT daily_goal, daily_protein, daily_fat, daily_carbs FROM users WHERE user_id = %s", (user_id,))
                 u = cursor.fetchone()
-                cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
-                e = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT SUM(calories), SUM(protein), SUM(fat), SUM(carbs) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
+                e = cursor.fetchone()
 
         if not u:
             return await callback.message.edit_text("Спочатку пройди реєстрацію в профілі!")
 
-        goal = u[0]
-        res = f"📋 **Зведення на сьогодні:**\n🍽 З'їдено: {e} ккал\n🎯 Твоя норма: {goal} ккал\n"
-        res += f"🤍 Залишилось: {goal - e} ккал" if goal >= e else f"❕ Перебір: {e - goal} ккал!"
+        g_cal, g_p, g_f, g_c = u[0] or 0, u[1] or 0, u[2] or 0, u[3] or 0
+        e_cal, e_p, e_f, e_c = (e[0] or 0), (e[1] or 0), (e[2] or 0), (e[3] or 0)
+
+        res = f"📋 **Зведення на сьогодні:**\n\n" \
+              f"🍽 Калорії: {e_cal} / {g_cal} ккал\n" \
+              f"🥩 Білки: {e_p} / {g_p} г\n" \
+              f"🧈 Жири: {e_f} / {g_f} г\n" \
+              f"🍞 Вуглеводи: {e_c} / {g_c} г\n\n"
+              
+        res += f"🤍 Залишилось: {g_cal - e_cal} ккал" if g_cal >= e_cal else f"❕ Перебір: {e_cal - g_cal} ккал!"
         
         await callback.message.edit_text(res, parse_mode="Markdown")
     except Exception as e:
