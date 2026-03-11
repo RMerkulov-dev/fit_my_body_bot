@@ -4,6 +4,7 @@ import psycopg2
 import logging
 import json
 import random
+import re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -347,7 +348,7 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
 
     data = await state.get_data()
     user_goal = message.text
-    workouts = data['workouts']
+    workouts = data.get('workouts', 'Не вказано')
 
     await message.answer("⏳ Аналізую ваші параметри та мету... Зачекай пару секунд.", reply_markup=get_main_keyboard())
     
@@ -379,9 +380,20 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
             messages=[{"role": "system", "content": prompt}]
         )
         
-        result = json.loads(response.choices[0].message.content)
+        # Очищення відповіді від можливих маркдаун-тегів (часта помилка AI)
+        content = response.choices[0].message.content
+        if content.startswith('```json'):
+            content = content.replace('```json', '').replace('```', '').strip()
+        elif content.startswith('```'):
+            content = content.replace('```', '').strip()
+            
+        result = json.loads(content)
         explanation = result.get("explanation", "Розрахунок завершено.")
-        rec_cal = int(result.get("recommended_calories", 2000))
+        
+        # Безпечне вилучення цифр (якщо ШІ надіслав текст замість числа)
+        rec_cal_raw = str(result.get("recommended_calories", 2000))
+        digits = re.findall(r'\d+', rec_cal_raw)
+        rec_cal = int(digits[0]) if digits else 2000
 
         text = f"🤖 **Висновок AI-Дієтолога:**\n\n{explanation}\n\n🎯 **Рекомендована норма:** {rec_cal} ккал/день."
         
@@ -394,8 +406,7 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
         
     except Exception as e:
         logger.error(f"AI Goal Calc Error: {e}")
-        await message.answer("Помилка під час розрахунку. Спробуй ще раз.")
-        await state.clear()
+        await message.answer(f"❌ Помилка під час розрахунку. Спробуй написати коротше або інакше.\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
 
 @dp.callback_query(F.data.startswith("setaigoal_"))
 async def apply_ai_goal(callback: types.CallbackQuery):
@@ -479,9 +490,20 @@ async def ai_food_process(message: types.Message, state: FSMContext):
             messages=[{"role": "system", "content": prompt}]
         )
         
-        result = json.loads(response.choices[0].message.content)
+        # Очищення відповіді від можливих маркдаун-тегів (часта помилка AI)
+        content = response.choices[0].message.content
+        if content.startswith('```json'):
+            content = content.replace('```json', '').replace('```', '').strip()
+        elif content.startswith('```'):
+            content = content.replace('```', '').strip()
+            
+        result = json.loads(content)
         breakdown = result.get("breakdown", "Немає опису")
-        total_calories = int(result.get("total", 0))
+        
+        # Безпечне вилучення цифр
+        total_raw = str(result.get("total", 0))
+        digits = re.findall(r'\d+', total_raw)
+        total_calories = int(digits[0]) if digits else 0
 
         user_id = message.from_user.id
         today = datetime.now().date().isoformat()
@@ -518,7 +540,7 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         
     except Exception as e:
         logger.error(f"AI Error: {e}")
-        await message.answer("Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:", reply_markup=get_cancel_keyboard())
+        await message.answer(f"❌ Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
 
 @dp.callback_query(F.data.startswith("aisave_"))
 async def save_ai_calories(callback: types.CallbackQuery):
