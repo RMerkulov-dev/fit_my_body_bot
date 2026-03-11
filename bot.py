@@ -37,23 +37,6 @@ dp = Dispatcher()
 # Ініціалізація клієнта OpenAI
 ai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# Жарти для різноманітності
-SUCCESS_JOKES = [
-    "Ваш прес передає вам подяку! 🕶",
-    "Можна ще з'їсти щось смачненьке, але без фанатизму! 🧁",
-    "Ідеально! Ви сьогодні просто фітнес-гуру. 🧘‍♀️",
-    "Совість чиста, макроси в нормі! ✨",
-    "Так тримати! Термінатор би вами пишався. 🦾"
-]
-
-FAIL_JOKES = [
-    "Ваші джинси дивляться на вас із засудженням... 🫣",
-    "Будемо відпрацьовувати в залі, чи просто сховаємо ваги? 👟",
-    "Хтось вночі крав їжу з холодильника? 🐾",
-    "Ех, а так добре день починався... Ну нічого, завтра на дієту! 🫠",
-    "Ваша фігура каже 'Ой-йой', а шлунок каже 'Дякую, бос!' 🍟"
-]
-
 def safe_int(val, default=0):
     if val is None: return default
     digits = re.findall(r'-?\d+', str(val))
@@ -503,7 +486,7 @@ async def apply_ai_goal(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer("Не вдалося зберегти мету.")
 
 # ==========================================
-# 7. ДОДАВАННЯ ЇЖІ (БЖУ + КАЛОРІЇ)
+# 7. ДОДАВАННЯ ЇЖІ (БЖУ + ПОРАДИ + БЕЗПЕРЕРВНИЙ ВВІД)
 # ==========================================
 @dp.message(F.text == "✖️ Скасувати")
 async def cancel_action(message: types.Message, state: FSMContext):
@@ -555,10 +538,30 @@ async def ai_food_process(message: types.Message, state: FSMContext):
 
     text_input = message.text.strip()
     match_manual = re.fullmatch(r'(\d+)\s*(ккал|kcal|калорій|калорий)?', text_input.lower())
-    
     is_manual = bool(match_manual)
+    
+    # 1. Отримуємо поточну статистику за день ДО розрахунку, щоб AI міг дати пораду
+    user_id = message.from_user.id
+    today = datetime.now().date().isoformat()
+    
+    goal_cal, goal_p, goal_f, goal_c = 0, 0, 0, 0
+    eaten_cal, eaten_p, eaten_f, eaten_c = 0, 0, 0, 0
+    
+    with psycopg2.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT daily_goal, daily_protein, daily_fat, daily_carbs FROM users WHERE user_id = %s", (user_id,))
+            u = cursor.fetchone()
+            if u: 
+                goal_cal, goal_p, goal_f, goal_c = (u[0] or 0), (u[1] or 0), (u[2] or 0), (u[3] or 0)
+                
+            cursor.execute("SELECT SUM(calories), SUM(protein), SUM(fat), SUM(carbs) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
+            e = cursor.fetchone()
+            if e:
+                eaten_cal, eaten_p, eaten_f, eaten_c = (e[0] or 0), (e[1] or 0), (e[2] or 0), (e[3] or 0)
+
     total_calories, total_p, total_f, total_c = 0, 0, 0, 0
     breakdown = ""
+    advice = ""
 
     if is_manual:
         total_calories = int(match_manual.group(1))
@@ -567,14 +570,20 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         await message.answer("⏳ Аналізую продукти та БЖУ... Зачекай пару секунд.", reply_markup=get_main_keyboard())
         
         prompt = f"""
-        Ти професійний дієтолог. Користувач з'їв наступне: "{text_input}".
+        Ти професійний дієтолог і емпатичний друг. Користувач з'їв наступне: "{text_input}".
         Оціни калорійність та БЖУ (білки, жири, вуглеводи) всіх продуктів і порахуй загальну суму.
+        
+        Поточний статус користувача за сьогодні (ДО цього прийому): 
+        З'їдено {eaten_cal} з {goal_cal} ккал. 
+        Білки: {eaten_p}/{goal_p}г, Жири: {eaten_f}/{goal_f}г, Вуглеводи: {eaten_c}/{goal_c}г.
+        
         Твоя відповідь має бути СУВОРО у форматі JSON:
-        "breakdown" - рядковий опис розрахунку,
+        "breakdown" - рядковий опис розрахунку (кожен продукт з нового рядка),
         "total_calories" - ціле число (сума калорій),
         "total_protein" - ціле число (білки в грамах),
         "total_fat" - ціле число (жири в грамах),
-        "total_carbs" - ціле число (вуглеводи в грамах).
+        "total_carbs" - ціле число (вуглеводи в грамах),
+        "advice" - коротка, дружня порада (1-2 речення) щодо цього прийому їжі в контексті його залишку на день. Наприклад, якщо після цієї їжі багато жирів, м'яко попередь про це, або похвали за білок. Пиши як близький друг, використовуй емодзі.
         """
 
         try:
@@ -591,8 +600,8 @@ async def ai_food_process(message: types.Message, state: FSMContext):
                 content = content.replace('```', '').strip()
                 
             result = json.loads(content)
-            breakdown = result.get("breakdown", "Немає опису")
-            breakdown = breakdown.replace("*", "").replace("_", "").replace("`", "")
+            breakdown = result.get("breakdown", "Немає опису").replace("*", "").replace("_", "").replace("`", "")
+            advice = result.get("advice", "").replace("*", "").replace("_", "").replace("`", "")
             
             total_calories = safe_int(result.get("total_calories", 0))
             total_p = safe_int(result.get("total_protein", 0))
@@ -603,34 +612,27 @@ async def ai_food_process(message: types.Message, state: FSMContext):
             logger.error(f"AI Error: {e}")
             return await message.answer(f"✖️ Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
 
-    user_id = message.from_user.id
-    today = datetime.now().date().isoformat()
-    goal = 0
-    eaten_today = 0
+    # Розрахунок нових залишків (додаємо цей прийом)
+    new_cal = eaten_cal + total_calories
+    new_p = eaten_p + total_p
+    new_f = eaten_f + total_f
+    new_c = eaten_c + total_c
     
-    with psycopg2.connect(DATABASE_URL) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT daily_goal FROM users WHERE user_id = %s", (user_id,))
-            u = cursor.fetchone()
-            if u and u[0]: goal = u[0]
-            cursor.execute("SELECT SUM(calories) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
-            e = cursor.fetchone()
-            if e and e[0]: eaten_today = e[0]
+    rem_cal = goal_cal - new_cal
+    rem_p = goal_p - new_p
+    rem_f = goal_f - new_f
+    rem_c = goal_c - new_c
+    
+    def format_rem(val):
+        return f"❗️Перебір {abs(val)}" if val < 0 else str(val)
 
-    status_text = ""
-    if goal > 0:
-        new_total = eaten_today + total_calories
-        if new_total <= goal:
-            joke = random.choice(SUCCESS_JOKES)
-            status_text = f"\n\n📊 З цією їжею ви **вписуєтесь** у норму! Залишиться: {goal - new_total} ккал.\n_{joke}_"
-        else:
-            joke = random.choice(FAIL_JOKES)
-            status_text = f"\n\n❕ **Овва, перебір!** Ви перевищите денну норму на {new_total - goal} ккал.\n_{joke}_"
+    status_text = f"\n\n📊 **Залишок на сьогодні:**\n🤍 Ккал: {format_rem(rem_cal)}\n🥩 Білки: {format_rem(rem_p)} г | 🧈 Жири: {format_rem(rem_f)} г | 🍞 Вугл: {format_rem(rem_c)} г"
+    advice_text = f"\n\n💡 **Коментар AI:** {advice}" if advice else ""
 
     if is_manual:
         text = f"⚡ **Швидке введення:**\n\n**Разом:** {total_calories} ккал{status_text}"
     else:
-        text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал (Б:{total_p} Ж:{total_f} В:{total_c}){status_text}"
+        text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал (Б:{total_p} Ж:{total_f} В:{total_c}){status_text}{advice_text}"
     
     callback_string = f"aisave_{total_calories}_{total_p}_{total_f}_{total_c}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -657,10 +659,20 @@ async def save_ai_calories(callback: types.CallbackQuery):
                                (callback.from_user.id, "ai_food", calories, p, f, c, today))
             conn.commit()
             
-        await callback.message.edit_text(callback.message.text + "\n\n✔️ *Успішно збережено в щоденник!*", parse_mode="Markdown")
+        # Замінюємо кнопку "Зберегти" на кнопку безперервного вводу
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Додати ще їжу", callback_data="add_more_food")]
+        ])
+        await callback.message.edit_text(callback.message.text + "\n\n✔️ *Успішно збережено в щоденник!*", reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Помилка при збереженні AI калорій: {e}")
         await callback.message.answer("Не вдалося зберегти калорії в базу даних.")
+
+@dp.callback_query(F.data == "add_more_food")
+async def add_more_food_prompt(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("Пиши, що ще ти з'їв (наприклад: _кава і яблуко_):", reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+    await state.set_state(AIState.waiting_for_food_text)
+    await callback.answer()
 
 # ==========================================
 # 8. СТАТИСТИКА (З ОНОВЛЕНИМИ БЖУ)
