@@ -121,6 +121,7 @@ class AIState(StatesGroup):
 class AIGoalState(StatesGroup):
     workouts = State()
     goal_type = State()
+    refine = State() # Стан для уточнення мети
 
 # ==========================================
 # 3. КЛАВІАТУРИ
@@ -333,48 +334,8 @@ async def save_new_goal(message: types.Message, state: FSMContext):
 # ==========================================
 # 6. РОЗУМНИЙ РОЗРАХУНОК ЦІЛІ ТА БЖУ З AI
 # ==========================================
-@dp.message(F.text == "✨ Мета Kcal AI")
-async def ai_calc_goal_start(message: types.Message, state: FSMContext):
-    if not ai_client:
-        return await message.answer("Функція AI поки недоступна (не налаштовано ключ OPENAI_API_KEY).")
-    
-    try:
-        with psycopg2.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT gender, age, height FROM users WHERE user_id = %s", (message.from_user.id,))
-                u = cursor.fetchone()
-                cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY date DESC LIMIT 1", (message.from_user.id,))
-                w = cursor.fetchone()
-                if not u or not w:
-                    return await message.answer("❕ Щоб AI зміг розрахувати норму, спочатку заповни профіль та внеси вагу!")
-    except Exception as e:
-        return await message.answer("Помилка бази даних.")
-
-    await message.answer("👟 Розкажіть про свою фізичну активність.\nСкільки разів на тиждень ви тренуєтесь і який це вид тренувань? (наприклад: _3 рази на тиждень, біг та йога_, або _майже не рухаюсь_)", 
-                         reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
-    await state.set_state(AIGoalState.workouts)
-
-@dp.message(AIGoalState.workouts)
-async def ai_calc_goal_workouts(message: types.Message, state: FSMContext):
-    if message.text == "✖️ Скасувати":
-        await state.clear()
-        return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
-    
-    await state.update_data(workouts=message.text)
-    await message.answer("🎯 Яка ваша головна мета?\n(наприклад: _хочу схуднути на 5 кг_, _хочу набрати м'язову масу_, або _просто підтримувати форму_)", 
-                         reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
-    await state.set_state(AIGoalState.goal_type)
-
-@dp.message(AIGoalState.goal_type)
-async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
-    if message.text == "✖️ Скасувати":
-        await state.clear()
-        return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
-
-    data = await state.get_data()
-    user_goal = message.text
-    workouts = data.get('workouts', 'Не вказано')
-
+async def generate_and_send_ai_goal(message: types.Message, state: FSMContext, workouts: str, user_goal: str):
+    """Спільна функція для генерації та відправки цілі від AI (щоб уникнути дублювання коду)"""
     await message.answer("⏳ Аналізую ваші параметри та мету... Зачекай пару секунд.", reply_markup=get_main_keyboard())
     
     try:
@@ -426,21 +387,100 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
 
         text = f"✨ **Висновок AI-Дієтолога:**\n\n{explanation}\n\n🎯 **Рекомендована норма:** {rec_cal} ккал\n🥩 Білки: {rec_p}г | 🧈 Жири: {rec_f}г | 🍞 Вугл: {rec_c}г"
         
-        # Передаємо всі параметри в колбек
+        # Кнопки "Встановити" та "Уточнити"
         callback_string = f"setaigoal_{rec_cal}_{rec_p}_{rec_f}_{rec_c}"
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"✔️ Встановити цю мету", callback_data=callback_string)]
+            [InlineKeyboardButton(text=f"✔️ Встановити цю мету", callback_data=callback_string)],
+            [InlineKeyboardButton(text="💬 Уточнити деталі", callback_data="refine_ai_goal")]
         ])
         
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-        await state.clear()
+        
+        # Зкидаємо активний стан, але залишаємо збережені дані (workouts, goal_type) для можливості уточнення
+        await state.set_state(None)
         
     except Exception as e:
         logger.error(f"AI Goal Calc Error: {e}")
         await message.answer(f"✖️ Помилка під час розрахунку. Спробуй написати коротше або інакше.\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
 
+
+@dp.message(F.text == "✨ Мета Kcal AI")
+async def ai_calc_goal_start(message: types.Message, state: FSMContext):
+    if not ai_client:
+        return await message.answer("Функція AI поки недоступна (не налаштовано ключ OPENAI_API_KEY).")
+    
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT gender, age, height FROM users WHERE user_id = %s", (message.from_user.id,))
+                u = cursor.fetchone()
+                cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY date DESC LIMIT 1", (message.from_user.id,))
+                w = cursor.fetchone()
+                if not u or not w:
+                    return await message.answer("❕ Щоб AI зміг розрахувати норму, спочатку заповни профіль та внеси вагу!")
+    except Exception as e:
+        return await message.answer("Помилка бази даних.")
+
+    await message.answer("👟 Розкажіть про свою фізичну активність.\nСкільки разів на тиждень ви тренуєтесь і який це вид тренувань? (наприклад: _3 рази на тиждень, біг та йога_, або _майже не рухаюсь_)", 
+                         reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+    await state.set_state(AIGoalState.workouts)
+
+@dp.message(AIGoalState.workouts)
+async def ai_calc_goal_workouts(message: types.Message, state: FSMContext):
+    if message.text == "✖️ Скасувати":
+        await state.clear()
+        return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
+    
+    await state.update_data(workouts=message.text)
+    await message.answer("🎯 Яка ваша головна мета?\n(наприклад: _хочу схуднути на 5 кг_, _хочу набрати м'язову масу_, або _просто підтримувати форму_)", 
+                         reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+    await state.set_state(AIGoalState.goal_type)
+
+@dp.message(AIGoalState.goal_type)
+async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
+    if message.text == "✖️ Скасувати":
+        await state.clear()
+        return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
+
+    # Зберігаємо ціль в пам'ять
+    await state.update_data(goal_type=message.text)
+    
+    data = await state.get_data()
+    workouts = data.get('workouts', 'Не вказано')
+    user_goal = message.text
+
+    await generate_and_send_ai_goal(message, state, workouts, user_goal)
+
+@dp.callback_query(F.data == "refine_ai_goal")
+async def refine_ai_goal_start(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get('workouts'):
+        # Якщо сесія очистилась, просимо почати спочатку
+        return await callback.message.answer("Час очікування минув. Будь ласка, почніть розрахунок спочатку (✨ Мета Kcal AI).")
+        
+    await callback.message.answer("💬 Що саме потрібно змінити або врахувати?\n(наприклад: _менше вуглеводів_, _додати більше білка_, _я вегетаріанець_):", 
+                                  reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+    await state.set_state(AIGoalState.refine)
+    await callback.answer()
+
+@dp.message(AIGoalState.refine)
+async def ai_calc_goal_refine(message: types.Message, state: FSMContext):
+    if message.text == "✖️ Скасувати":
+        await state.clear()
+        return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
+        
+    data = await state.get_data()
+    workouts = data.get('workouts', 'Не вказано')
+    original_goal = data.get('goal_type', '')
+    
+    # Додаємо уточнення до початкової мети
+    updated_goal = f"{original_goal}\nДодаткове уточнення: {message.text}"
+    await state.update_data(goal_type=updated_goal)
+    
+    await generate_and_send_ai_goal(message, state, workouts, updated_goal)
+
 @dp.callback_query(F.data.startswith("setaigoal_"))
-async def apply_ai_goal(callback: types.CallbackQuery):
+async def apply_ai_goal(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
     daily_goal = int(parts[1])
     daily_p = int(parts[2])
@@ -454,6 +494,7 @@ async def apply_ai_goal(callback: types.CallbackQuery):
                                (daily_goal, daily_p, daily_f, daily_c, callback.from_user.id))
             conn.commit()
         await callback.message.edit_text(callback.message.text + "\n\n✔️ *Мета успішно оновлена!*", parse_mode="Markdown")
+        await state.clear() # Очищаємо пам'ять (workouts, goal_type) після успішного збереження
     except Exception as e:
         logger.error(f"Помилка застосування AI мети: {e}")
         await callback.message.answer("Не вдалося зберегти мету.")
