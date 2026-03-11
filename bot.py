@@ -123,6 +123,9 @@ class AIGoalState(StatesGroup):
     goal_type = State()
     refine = State() # Стан для уточнення мети
 
+class SOSState(StatesGroup):
+    waiting_for_question = State()
+
 # ==========================================
 # 3. КЛАВІАТУРИ
 # ==========================================
@@ -130,7 +133,7 @@ def get_main_keyboard():
     kb = [
         [KeyboardButton(text="🥑 Внести Kcal AI"), KeyboardButton(text="✨ Мета Kcal AI")],
         [KeyboardButton(text="📉 Внести вагу"), KeyboardButton(text="📊 Статистика")],
-        [KeyboardButton(text="🪪 Профіль")]
+        [KeyboardButton(text="🪪 Профіль"), KeyboardButton(text="🆘 SOS")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -799,8 +802,87 @@ async def callback_confirm_reset(callback: types.CallbackQuery):
 async def callback_cancel_reset(callback: types.CallbackQuery):
     await callback.message.edit_text("✔️ Дію скасовано. Ваша статистика в безпеці!")
 
+
 # ==========================================
-# 9. ЗАПУСК БОТА
+# 9. SOS - ПІДТРИМКА
+# ==========================================
+@dp.message(F.text == "🆘 SOS")
+async def sos_start(message: types.Message, state: FSMContext):
+    if not ai_client:
+        return await message.answer("Функція AI поки недоступна.")
+    
+    await message.answer(
+        "❤️ **Я не тільки твій дієтолог, але й друг!**\n\n"
+        "Шлях до ідеального тіла буває складним, і це абсолютно нормально — відчувати втому чи бажання все кинути.\n\n"
+        "Розкажи мені, що трапилося? Хочеться зірватися на солодке? Втратив(ла) мотивацію? Просто сумно?\n"
+        "Напиши мені сюди свій біль або запитання, і ми разом знайдемо вихід!",
+        reply_markup=get_cancel_keyboard(), parse_mode="Markdown"
+    )
+    await state.set_state(SOSState.waiting_for_question)
+
+@dp.message(SOSState.waiting_for_question)
+async def sos_process(message: types.Message, state: FSMContext):
+    if message.text == "✖️ Скасувати":
+        await state.clear()
+        return await message.answer("Повертаємось до головного меню. Пам'ятай, я завжди поруч! 🦾", reply_markup=get_main_keyboard())
+        
+    await message.answer("⏳ Читаю і думаю, як тобі краще допомогти...", reply_markup=get_main_keyboard())
+    
+    user_id = message.from_user.id
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT gender, age, height, daily_goal FROM users WHERE user_id = %s", (user_id,))
+                u = cursor.fetchone()
+                cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY date DESC LIMIT 1", (user_id,))
+                w = cursor.fetchone()
+    except Exception as e:
+        logger.error(f"Помилка БД в SOS: {e}")
+        u, w = None, None
+        
+    if u and w:
+        gender_str = "Чоловік" if u[0] == "male" else "Жінка"
+        age, height, goal = u[1], u[2], u[3]
+        weight = w[0]
+        user_info = f"Параметри: {gender_str}, {age} років, зріст {height} см, вага {weight} кг. Мета: {goal} ккал/день."
+    else:
+        user_info = "Параметри користувача поки не заповнені."
+        
+    prompt = f"""
+    Ти професійний фітнес-тренер, дієтолог і найкращий друг.
+    Користувач натиснув кнопку SOS. Йому потрібна психологічна та професійна підтримка, щоб не зірватися з дієти/тренувань, або просто порада.
+    
+    Дані про користувача:
+    {user_info}
+    
+    Повідомлення від користувача: "{message.text}"
+    
+    Твоє завдання:
+    1. Вислухати і підтримати як дуже емпатичний і близький друг.
+    2. Дати дієву, але м'яку пораду як експерт (наприклад, чим безпечно замінити солодке, як відпочити, чому один зрив - це не кінець всього шляху).
+    3. Відповідь має бути теплою, надихаючою та з використанням дружніх емодзі. 
+    4. ВІДПОВІДАЙ УКРАЇНСЬКОЮ МОВОЮ.
+    5. НЕ використовуй маркдаун символи форматирования (ніяких зірочок *, підкреслень _ чи зворотних апострофів `), пиши просто звичайним текстом і емодзі.
+    """
+    
+    try:
+        response = await ai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": prompt}]
+        )
+        
+        ai_answer = response.choices[0].message.content
+        ai_answer = ai_answer.replace("*", "").replace("_", "").replace("`", "")
+        
+        await message.answer(f"❤️ **Твій AI-Друг:**\n\n{ai_answer}", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        await state.clear()
+    except Exception as e:
+        logger.error(f"SOS AI Error: {e}")
+        await message.answer("✖️ Виникла помилка зв'язку з AI. Але тримайся, я в тебе вірю!", reply_markup=get_main_keyboard())
+        await state.clear()
+
+# ==========================================
+# 10. ЗАПУСК БОТА
 # ==========================================
 async def main():
     init_db()
