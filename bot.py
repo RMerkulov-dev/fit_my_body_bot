@@ -39,19 +39,19 @@ ai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Жарти для різноманітності
 SUCCESS_JOKES = [
-    "Ваш прес передає вам подяку! 😎",
-    "Можна ще з'їсти щось смачненьке, але без фанатизму! 🍰",
+    "Ваш прес передає вам подяку! 🕶",
+    "Можна ще з'їсти щось смачненьке, але без фанатизму! 🧁",
     "Ідеально! Ви сьогодні просто фітнес-гуру. 🧘‍♀️",
     "Совість чиста, калорії в нормі! ✨",
-    "Так тримати! Термінатор би вами пишався. 🤖💪"
+    "Так тримати! Термінатор би вами пишався. 🦾"
 ]
 
 FAIL_JOKES = [
-    "Ваші джинси дивляться на вас із засудженням... 👀",
-    "Будемо відпрацьовувати в залі, чи просто сховаємо ваги? 🏃‍♂️",
-    "Хтось вночі крав їжу з холодильника? 🦝",
-    "Ех, а так добре день починався... Ну нічого, завтра на дієту! 😅",
-    "Ваша фігура каже 'Ой-йой', а шлунок каже 'Дякую, бос!' 🍔"
+    "Ваші джинси дивляться на вас із засудженням... 🫣",
+    "Будемо відпрацьовувати в залі, чи просто сховаємо ваги? 👟",
+    "Хтось вночі крав їжу з холодильника? 🐾",
+    "Ех, а так добре день починався... Ну нічого, завтра на дієту! 🫠",
+    "Ваша фігура каже 'Ой-йой', а шлунок каже 'Дякую, бос!' 🍟"
 ]
 
 # ==========================================
@@ -116,19 +116,19 @@ class AIGoalState(StatesGroup):
 # ==========================================
 def get_main_keyboard():
     kb = [
-        [KeyboardButton(text="🤖 Розрахувати з AI"), KeyboardButton(text="🎯 Розрахувати Kcal")],
-        [KeyboardButton(text="⚖️ Внести вагу"), KeyboardButton(text="📊 Статистика")],
-        [KeyboardButton(text="👤 Профіль")]
+        [KeyboardButton(text="🥑 Внести Kcal AI"), KeyboardButton(text="✨ Мета Kcal AI")],
+        [KeyboardButton(text="📉 Внести вагу"), KeyboardButton(text="📊 Статистика")],
+        [KeyboardButton(text="🪪 Профіль")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 def get_cancel_keyboard():
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Скасувати")]], resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✖️ Скасувати")]], resize_keyboard=True)
 
 def get_gender_keyboard(prefix="reg"):
     kb = [
-        [InlineKeyboardButton(text="👨 Чоловіча", callback_data=f"{prefix}_gender_male"),
-         InlineKeyboardButton(text="👩 Жіноча", callback_data=f"{prefix}_gender_female")]
+        [InlineKeyboardButton(text="🧍‍♂️ Чоловіча", callback_data=f"{prefix}_gender_male"),
+         InlineKeyboardButton(text="🧍‍♀️ Жіноча", callback_data=f"{prefix}_gender_female")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -154,7 +154,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
                 user = cursor.fetchone()
                 
         if user and user[0]:
-            await message.answer(f"З поверненням, {user[0]}! 🏋️‍♂️", reply_markup=get_main_keyboard())
+            await message.answer(f"З поверненням, {user[0]}! 🦾", reply_markup=get_main_keyboard())
         else:
             if BOT_PASSWORD:
                 await message.answer("🔒 Бот приватний. Будь ласка, введіть пароль для доступу:", reply_markup=ReplyKeyboardRemove())
@@ -169,10 +169,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @dp.message(AuthState.waiting_for_password)
 async def process_password(message: types.Message, state: FSMContext):
     if message.text == BOT_PASSWORD:
-        await message.answer("✅ Доступ дозволено!\n\nПривіт! Давай налаштуємо твій профіль. Як тебе звати?")
+        await message.answer("✔️ Доступ дозволено!\n\nПривіт! Давай налаштуємо твій профіль. Як тебе звати?")
         await state.set_state(RegState.name)
     else:
-        await message.answer("❌ Невірний пароль. Спробуйте ще раз.")
+        await message.answer("✖️ Невірний пароль. Спробуйте ще раз.")
 
 @dp.message(RegState.name)
 async def reg_name(message: types.Message, state: FSMContext):
@@ -234,7 +234,7 @@ async def reg_goal(message: types.Message, state: FSMContext):
                                (user_id, data['weight'], today))
             conn.commit()
             
-        await message.answer("✅ Реєстрація завершена! Тепер ти можеш повноцінно користуватися ботом.", reply_markup=get_main_keyboard())
+        await message.answer("✔️ Реєстрація завершена! Тепер ти можеш повноцінно користуватися ботом.", reply_markup=get_main_keyboard())
     except Exception as e:
         logger.error(f"Помилка збереження БД при реєстрації: {e}")
         await message.answer("Сталася помилка бази даних. Спробуй натиснути /start і повторити.")
@@ -243,7 +243,7 @@ async def reg_goal(message: types.Message, state: FSMContext):
 # ==========================================
 # 5. ПРОФІЛЬ ТА РУЧНА ЗМІНА ЦІЛІ
 # ==========================================
-@dp.message(F.text == "👤 Профіль")
+@dp.message(F.text == "🪪 Профіль")
 async def show_profile(message: types.Message):
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
@@ -257,9 +257,9 @@ async def show_profile(message: types.Message):
             return await message.answer("Спочатку натисни /start і пройди реєстрацію!")
 
         weight_str = f"{w[0]} кг" if w else "Немає даних"
-        gender_str = "Чоловіча 👨" if u[1] == "male" else "Жіноча 👩"
+        gender_str = "Чоловіча 🧍‍♂️" if u[1] == "male" else "Жіноча 🧍‍♀️"
         
-        text = f"👤 **Профіль: {u[0]}**\n" \
+        text = f"🪪 **Профіль: {u[0]}**\n" \
                f"Стать: {gender_str}\nВік: {u[2]} років\nЗріст: {u[3]} см\nПоточна вага: {weight_str}\n" \
                f"🎯 **Мета на день:** {u[4]} ккал"
                
@@ -298,7 +298,7 @@ async def save_new_goal(message: types.Message, state: FSMContext):
             conn.commit()
 
         period_name = {1: "день", 7: "тиждень", 30: "місяць", 90: "3 місяці"}[days]
-        await message.answer(f"✅ Мета на {period_name} ({total_goal} ккал) збережена!\nТвоя нова норма: **{daily_goal} ккал на день**.", parse_mode="Markdown")
+        await message.answer(f"✔️ Мета на {period_name} ({total_goal} ккал) збережена!\nТвоя нова норма: **{daily_goal} ккал на день**.", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Помилка збереження мети: {e}")
         await message.answer("Сталася помилка. Спробуй пізніше.")
@@ -307,7 +307,7 @@ async def save_new_goal(message: types.Message, state: FSMContext):
 # ==========================================
 # 6. РОЗУМНИЙ РОЗРАХУНОК ЦІЛІ З AI (НОВЕ)
 # ==========================================
-@dp.message(F.text == "🎯 Розрахувати Kcal")
+@dp.message(F.text == "✨ Мета Kcal AI")
 async def ai_calc_goal_start(message: types.Message, state: FSMContext):
     if not ai_client:
         return await message.answer("Функція AI поки недоступна (не налаштовано ключ OPENAI_API_KEY).")
@@ -321,17 +321,17 @@ async def ai_calc_goal_start(message: types.Message, state: FSMContext):
                 cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY date DESC LIMIT 1", (message.from_user.id,))
                 w = cursor.fetchone()
                 if not u or not w:
-                    return await message.answer("⛔ Щоб AI зміг розрахувати норму, спочатку заповни профіль та внеси вагу!")
+                    return await message.answer("❕ Щоб AI зміг розрахувати норму, спочатку заповни профіль та внеси вагу!")
     except Exception as e:
         return await message.answer("Помилка бази даних.")
 
-    await message.answer("🏃‍♂️ Розкажіть про свою фізичну активність.\nСкільки разів на тиждень ви тренуєтесь і який це вид тренувань? (наприклад: _3 рази на тиждень, біг та йога_, або _майже не рухаюсь_)", 
+    await message.answer("👟 Розкажіть про свою фізичну активність.\nСкільки разів на тиждень ви тренуєтесь і який це вид тренувань? (наприклад: _3 рази на тиждень, біг та йога_, або _майже не рухаюсь_)", 
                          reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
     await state.set_state(AIGoalState.workouts)
 
 @dp.message(AIGoalState.workouts)
 async def ai_calc_goal_workouts(message: types.Message, state: FSMContext):
-    if message.text == "❌ Скасувати":
+    if message.text == "✖️ Скасувати":
         await state.clear()
         return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
     
@@ -342,7 +342,7 @@ async def ai_calc_goal_workouts(message: types.Message, state: FSMContext):
 
 @dp.message(AIGoalState.goal_type)
 async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
-    if message.text == "❌ Скасувати":
+    if message.text == "✖️ Скасувати":
         await state.clear()
         return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
 
@@ -395,10 +395,10 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
         digits = re.findall(r'\d+', rec_cal_raw)
         rec_cal = int(digits[0]) if digits else 2000
 
-        text = f"🤖 **Висновок AI-Дієтолога:**\n\n{explanation}\n\n🎯 **Рекомендована норма:** {rec_cal} ккал/день."
+        text = f"✨ **Висновок AI-Дієтолога:**\n\n{explanation}\n\n🎯 **Рекомендована норма:** {rec_cal} ккал/день."
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"✅ Встановити {rec_cal} ккал як мету", callback_data=f"setaigoal_{rec_cal}")]
+            [InlineKeyboardButton(text=f"✔️ Встановити {rec_cal} ккал як мету", callback_data=f"setaigoal_{rec_cal}")]
         ])
         
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
@@ -406,7 +406,7 @@ async def ai_calc_goal_finish(message: types.Message, state: FSMContext):
         
     except Exception as e:
         logger.error(f"AI Goal Calc Error: {e}")
-        await message.answer(f"❌ Помилка під час розрахунку. Спробуй написати коротше або інакше.\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
+        await message.answer(f"✖️ Помилка під час розрахунку. Спробуй написати коротше або інакше.\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
 
 @dp.callback_query(F.data.startswith("setaigoal_"))
 async def apply_ai_goal(callback: types.CallbackQuery):
@@ -416,7 +416,7 @@ async def apply_ai_goal(callback: types.CallbackQuery):
             with conn.cursor() as cursor:
                 cursor.execute("UPDATE users SET daily_goal = %s WHERE user_id = %s", (daily_goal, callback.from_user.id))
             conn.commit()
-        await callback.message.edit_text(callback.message.text + "\n\n✅ *Мета успішно оновлена!*", parse_mode="Markdown")
+        await callback.message.edit_text(callback.message.text + "\n\n✔️ *Мета успішно оновлена!*", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Помилка застосування AI мети: {e}")
         await callback.message.answer("Не вдалося зберегти мету.")
@@ -424,12 +424,12 @@ async def apply_ai_goal(callback: types.CallbackQuery):
 # ==========================================
 # 7. ДОДАВАННЯ ЇЖІ ЧЕРЕЗ AI ТА ВАГИ
 # ==========================================
-@dp.message(F.text == "❌ Скасувати")
+@dp.message(F.text == "✖️ Скасувати")
 async def cancel_action(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("Дію скасовано.", reply_markup=get_main_keyboard())
 
-@dp.message(F.text == "⚖️ Внести вагу")
+@dp.message(F.text == "📉 Внести вагу")
 async def btn_add_weight(message: types.Message, state: FSMContext):
     await message.answer("Введи поточну вагу (кг):", reply_markup=get_cancel_keyboard())
     await state.set_state(WeightState.waiting_for_weight)
@@ -443,12 +443,12 @@ async def process_weight(message: types.Message, state: FSMContext):
             with conn.cursor() as cursor:
                 cursor.execute("INSERT INTO weight_log (user_id, weight, date) VALUES (%s, %s, %s)", (message.from_user.id, weight, today))
             conn.commit()
-        await message.answer(f"✅ Вага {weight} кг записана.", reply_markup=get_main_keyboard())
+        await message.answer(f"✔️ Вага {weight} кг записана.", reply_markup=get_main_keyboard())
         await state.clear()
     except Exception:
         await message.answer("Введіть коректне число.")
 
-@dp.message(F.text == "🤖 Розрахувати з AI")
+@dp.message(F.text == "🥑 Внести Kcal AI")
 async def ai_food_start(message: types.Message, state: FSMContext):
     if not ai_client:
         return await message.answer("Функція AI поки недоступна (не налаштовано ключ OPENAI_API_KEY).")
@@ -458,7 +458,7 @@ async def ai_food_start(message: types.Message, state: FSMContext):
             with conn.cursor() as cursor:
                 cursor.execute("SELECT name FROM users WHERE user_id = %s", (message.from_user.id,))
                 if not cursor.fetchone():
-                    return await message.answer("⛔ Немає доступу. Введіть /start і авторизуйтесь.")
+                    return await message.answer("❕ Немає доступу. Введіть /start і авторизуйтесь.")
     except Exception as e:
         logger.error(f"Помилка перевірки доступу AI: {e}")
         return await message.answer("Помилка бази даних.")
@@ -469,7 +469,7 @@ async def ai_food_start(message: types.Message, state: FSMContext):
 
 @dp.message(AIState.waiting_for_food_text)
 async def ai_food_process(message: types.Message, state: FSMContext):
-    if message.text == "❌ Скасувати":
+    if message.text == "✖️ Скасувати":
         await state.clear()
         return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
 
@@ -527,12 +527,12 @@ async def ai_food_process(message: types.Message, state: FSMContext):
                 status_text = f"\n\n📊 З цією їжею ви **вписуєтесь** у норму! Залишиться: {goal - new_total} ккал.\n_{joke}_"
             else:
                 joke = random.choice(FAIL_JOKES)
-                status_text = f"\n\n⚠️ **Овва, перебір!** Ви перевищите денну норму на {new_total - goal} ккал. (Разом за день буде {new_total} з {goal}).\n_{joke}_"
+                status_text = f"\n\n❕ **Овва, перебір!** Ви перевищите денну норму на {new_total - goal} ккал. (Разом за день буде {new_total} з {goal}).\n_{joke}_"
 
-        text = f"🤖 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал{status_text}"
+        text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал{status_text}"
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"💾 Зберегти {total_calories} ккал", callback_data=f"aisave_{total_calories}")]
+            [InlineKeyboardButton(text=f"📥 Зберегти {total_calories} ккал", callback_data=f"aisave_{total_calories}")]
         ])
         
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
@@ -540,7 +540,7 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         
     except Exception as e:
         logger.error(f"AI Error: {e}")
-        await message.answer(f"❌ Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
+        await message.answer(f"✖️ Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
 
 @dp.callback_query(F.data.startswith("aisave_"))
 async def save_ai_calories(callback: types.CallbackQuery):
@@ -554,7 +554,7 @@ async def save_ai_calories(callback: types.CallbackQuery):
                                (callback.from_user.id, "ai_food", calories, today))
             conn.commit()
             
-        await callback.message.edit_text(callback.message.text + "\n\n✅ *Успішно збережено в щоденник!*", parse_mode="Markdown")
+        await callback.message.edit_text(callback.message.text + "\n\n✔️ *Успішно збережено в щоденник!*", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Помилка при збереженні AI калорій: {e}")
         await callback.message.answer("Не вдалося зберегти калорії в базу даних.")
@@ -565,10 +565,10 @@ async def save_ai_calories(callback: types.CallbackQuery):
 @dp.message(F.text == "📊 Статистика")
 async def btn_statistics(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Сьогодні (Зведення)", callback_data="stat_today")],
+        [InlineKeyboardButton(text="🗓 Сьогодні (Зведення)", callback_data="stat_today")],
         [InlineKeyboardButton(text="🔥 За 7 днів", callback_data="stat_7days")],
-        [InlineKeyboardButton(text="📈 Загальний прогрес", callback_data="stat_overall")],
-        [InlineKeyboardButton(text="🗑 Скинути статистику", callback_data="reset_stats")]
+        [InlineKeyboardButton(text="🚀 Загальний прогрес", callback_data="stat_overall")],
+        [InlineKeyboardButton(text="🧨 Скинути статистику", callback_data="reset_stats")]
     ])
     await message.answer("Обери звіт:", reply_markup=kb)
 
@@ -589,8 +589,8 @@ async def callback_stat_today(callback: types.CallbackQuery):
             return await callback.message.edit_text("Спочатку пройди реєстрацію в профілі!")
 
         goal = u[0]
-        res = f"📊 **Зведення на сьогодні:**\n🍽 З'їдено: {e} ккал\n🎯 Твоя норма: {goal} ккал\n"
-        res += f"📉 Залишилось: {goal - e} ккал" if goal >= e else f"⚠️ Перебір: {e - goal} ккал!"
+        res = f"📋 **Зведення на сьогодні:**\n🍽 З'їдено: {e} ккал\n🎯 Твоя норма: {goal} ккал\n"
+        res += f"🤍 Залишилось: {goal - e} ккал" if goal >= e else f"❕ Перебір: {e - goal} ккал!"
         
         await callback.message.edit_text(res, parse_mode="Markdown")
     except Exception as e:
@@ -637,7 +637,7 @@ async def callback_stat_overall(callback: types.CallbackQuery):
                 f"📉 Найменше за день: {min_day[1]} ккал ({min_day[0]})"
             )
 
-        weight_text = "⚖️ **Прогрес ваги:** Немає даних."
+        weight_text = "📉 **Прогрес ваги:** Немає даних."
         if first_w and last_w:
             w_start = first_w[0]
             w_now = last_w[0]
@@ -648,16 +648,16 @@ async def callback_stat_overall(callback: types.CallbackQuery):
             elif diff < 0:
                 w_status = f"🔻 Ви скинули: {diff:.1f} кг 🎉"
             else:
-                w_status = "⚖️ Вага без змін."
+                w_status = "🫧 Вага без змін."
             
             weight_text = (
-                f"⚖️ **Прогрес ваги:**\n"
+                f"📉 **Прогрес ваги:**\n"
                 f"Початкова вага: {w_start} кг\n"
                 f"Поточна вага: {w_now} кг\n"
                 f"**{w_status}**"
             )
 
-        res = f"📈 **Загальна статистика:**\n\n{cal_text}\n\n{weight_text}"
+        res = f"🚀 **Загальна статистика:**\n\n{cal_text}\n\n{weight_text}"
         await callback.message.edit_text(res, parse_mode="Markdown")
         
     except Exception as e:
@@ -667,11 +667,11 @@ async def callback_stat_overall(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "reset_stats")
 async def callback_reset_stats_ask(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚠️ Так, видалити все", callback_data="confirm_reset")],
-        [InlineKeyboardButton(text="❌ Ні, скасувати", callback_data="cancel_reset")]
+        [InlineKeyboardButton(text="✔️ Так, видалити все", callback_data="confirm_reset")],
+        [InlineKeyboardButton(text="✖️ Ні, скасувати", callback_data="cancel_reset")]
     ])
     await callback.message.edit_text(
-        "⚠️ **УВАГА!**\nВи дійсно хочете видалити всю історію (з'їдені калорії та логи ваги)?\n\n*Ваш профіль (зріст, вік, добова мета) залишиться.*", 
+        "❕ **УВАГА!**\nВи дійсно хочете видалити всю історію (з'їдені калорії та логи ваги)?\n\n*Ваш профіль (зріст, вік, добова мета) залишиться.*", 
         reply_markup=kb, parse_mode="Markdown"
     )
 
@@ -683,14 +683,14 @@ async def callback_confirm_reset(callback: types.CallbackQuery):
                 cursor.execute("DELETE FROM calorie_log WHERE user_id = %s", (callback.from_user.id,))
                 cursor.execute("DELETE FROM weight_log WHERE user_id = %s", (callback.from_user.id,))
             conn.commit()
-        await callback.message.edit_text("✅ Вся ваша статистика була успішно очищена!")
+        await callback.message.edit_text("✔️ Вся ваша статистика була успішно очищена!")
     except Exception as e:
         logger.error(f"Помилка при скиданні статистики: {e}")
-        await callback.message.edit_text("❌ Виникла помилка при видаленні даних.")
+        await callback.message.edit_text("✖️ Виникла помилка при видаленні даних.")
 
 @dp.callback_query(F.data == "cancel_reset")
 async def callback_cancel_reset(callback: types.CallbackQuery):
-    await callback.message.edit_text("✅ Дію скасовано. Ваша статистика в безпеці!")
+    await callback.message.edit_text("✔️ Дію скасовано. Ваша статистика в безпеці!")
 
 # ==========================================
 # 9. ЗАПУСК БОТА
