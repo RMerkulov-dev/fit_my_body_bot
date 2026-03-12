@@ -580,7 +580,7 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         
         Твоя відповідь має бути СУВОРО у форматі JSON:
         "breakdown" - рядковий опис розрахунку. КОЖЕН продукт має бути з нового рядка строго у такому форматі (без зайвих символів чи зірочок):
-        "🔹 Назва продукту (вага) — ХХ ккал (🥩 Б:Х 🧈 Ж:Х 🍞 В:Х)"
+        "🔹 Назва продукту (вага) — ХХ ккал (Б:Х Ж:Х В:Х)"
         "total_calories" - ціле число (сума калорій),
         "total_protein" - ціле число (білки в грамах),
         "total_fat" - ціле число (жири в грамах),
@@ -635,7 +635,7 @@ async def ai_food_process(message: types.Message, state: FSMContext):
     if is_manual:
         text = f"⚡ **Швидке введення:**\n\n**Разом:** {total_calories} ккал{status_text}"
     else:
-        text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал (🥩 Б:{total_p} 🧈 Ж:{total_f} 🍞 В:{total_c}){status_text}{advice_text}"
+        text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал (Б:{total_p} Ж:{total_f} В:{total_c}){status_text}{advice_text}"
     
     callback_string = f"aisave_{total_calories}_{total_p}_{total_f}_{total_c}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
