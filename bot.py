@@ -387,7 +387,8 @@ async def generate_and_send_ai_goal(message: types.Message, state: FSMContext, w
         
     except Exception as e:
         logger.error(f"AI Goal Calc Error: {e}")
-        await message.answer(f"✖️ Помилка під час розрахунку. Спробуй написати коротше або інакше.\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
+        err_msg = str(e).replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+        await message.answer(f"✖️ Помилка під час розрахунку. Спробуй написати коротше або інакше.\n\nДеталі: {err_msg}", reply_markup=get_cancel_keyboard())
 
 
 @dp.message(F.text == "✨ Мета Kcal AI")
@@ -407,8 +408,8 @@ async def ai_calc_goal_start(message: types.Message, state: FSMContext):
     except Exception as e:
         return await message.answer("Помилка бази даних.")
 
-    await message.answer("👟 Розкажіть про свою фізичну активність.\nСкільки разів на тиждень ви тренуєтесь і який це вид тренувань? (наприклад: _3 рази на тиждень, біг та йога_, або _майже не рухаюсь_)", 
-                         reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+    await message.answer("👟 Розкажіть про свою фізичну активність.\nСкільки разів на тиждень ви тренуєтесь і який це вид тренувань? (наприклад: 3 рази на тиждень, біг та йога, або майже не рухаюсь)", 
+                         reply_markup=get_cancel_keyboard())
     await state.set_state(AIGoalState.workouts)
 
 @dp.message(AIGoalState.workouts)
@@ -418,8 +419,8 @@ async def ai_calc_goal_workouts(message: types.Message, state: FSMContext):
         return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
     
     await state.update_data(workouts=message.text)
-    await message.answer("🎯 Яка ваша головна мета?\n(наприклад: _хочу схуднути на 5 кг_, _хочу набрати м'язову масу_, або _просто підтримувати форму_)", 
-                         reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+    await message.answer("🎯 Яка ваша головна мета?\n(наприклад: хочу схуднути на 5 кг, хочу набрати м'язову масу, або просто підтримувати форму)", 
+                         reply_markup=get_cancel_keyboard())
     await state.set_state(AIGoalState.goal_type)
 
 @dp.message(AIGoalState.goal_type)
@@ -444,8 +445,8 @@ async def refine_ai_goal_start(callback: types.CallbackQuery, state: FSMContext)
         # Якщо сесія очистилась, просимо почати спочатку
         return await callback.message.answer("Час очікування минув. Будь ласка, почніть розрахунок спочатку (✨ Мета Kcal AI).")
         
-    await callback.message.answer("💬 Що саме потрібно змінити або врахувати?\n(наприклад: _менше вуглеводів_, _додати більше білка_, _я вегетаріанець_):", 
-                                  reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+    await callback.message.answer("💬 Що саме потрібно змінити або врахувати?\n(наприклад: менше вуглеводів, додати більше білка, я вегетаріанець):", 
+                                  reply_markup=get_cancel_keyboard())
     await state.set_state(AIGoalState.refine)
     await callback.answer()
 
@@ -526,7 +527,7 @@ async def ai_food_start(message: types.Message, state: FSMContext):
     except Exception as e:
         return await message.answer("Помилка бази даних.")
 
-    await message.answer("Опиши, що ти з'їв (наприклад: _я з'їв 3 яйця і хліб_)\n\n⚡ **АБО** просто напиши число калорій, якщо знаєш його (БЖУ тоді запишуться як нулі):", 
+    await message.answer("Опиши, що ти з'їв (наприклад: я з'їв 3 яйця і хліб)\n\n⚡ **АБО** просто напиши число калорій, якщо знаєш його (БЖУ тоді запишуться як нулі):", 
                          reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
     await state.set_state(AIState.waiting_for_food_text)
 
@@ -578,7 +579,8 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         Білки: {eaten_p}/{goal_p}г, Жири: {eaten_f}/{goal_f}г, Вуглеводи: {eaten_c}/{goal_c}г.
         
         Твоя відповідь має бути СУВОРО у форматі JSON:
-        "breakdown" - рядковий опис розрахунку (кожен продукт з нового рядка),
+        "breakdown" - рядковий опис розрахунку. КОЖЕН продукт має бути з нового рядка строго у такому форматі (без зайвих символів чи зірочок):
+        "🔹 Назва продукту (вага) — ХХ ккал (Б:Х Ж:Х В:Х)"
         "total_calories" - ціле число (сума калорій),
         "total_protein" - ціле число (білки в грамах),
         "total_fat" - ціле число (жири в грамах),
@@ -610,7 +612,8 @@ async def ai_food_process(message: types.Message, state: FSMContext):
             
         except Exception as e:
             logger.error(f"AI Error: {e}")
-            return await message.answer(f"✖️ Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:\n\n_Деталі: {e}_", reply_markup=get_cancel_keyboard())
+            err_msg = str(e).replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+            return await message.answer(f"✖️ Ой, не зміг розпізнати їжу. Спробуй написати трохи інакше:\n\nДеталі: {err_msg}", reply_markup=get_cancel_keyboard())
 
     # Розрахунок нових залишків (додаємо цей прийом)
     new_cal = eaten_cal + total_calories
@@ -670,7 +673,7 @@ async def save_ai_calories(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "add_more_food")
 async def add_more_food_prompt(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Пиши, що ще ти з'їв (наприклад: _кава і яблуко_):", reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
+    await callback.message.answer("Пиши, що ще ти з'їв (наприклад: кава і яблуко):", reply_markup=get_cancel_keyboard())
     await state.set_state(AIState.waiting_for_food_text)
     await callback.answer()
 
