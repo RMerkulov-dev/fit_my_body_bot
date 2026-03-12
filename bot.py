@@ -639,11 +639,18 @@ async def ai_food_process(message: types.Message, state: FSMContext):
     
     callback_string = f"aisave_{total_calories}_{total_p}_{total_f}_{total_c}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📥 Зберегти", callback_data=callback_string)]
+        [
+            InlineKeyboardButton(text="📥 Зберегти", callback_data=callback_string),
+            InlineKeyboardButton(text="✖️ Скасувати", callback_data="aicancel")
+        ]
     ])
     
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
     await state.clear()
+
+@dp.callback_query(F.data == "aicancel")
+async def cancel_ai_calories(callback: types.CallbackQuery):
+    await callback.message.edit_text("✖️ Збереження їжі скасовано. Цей прийом не додано до вашого щоденника.")
 
 @dp.callback_query(F.data.startswith("aisave_"))
 async def save_ai_calories(callback: types.CallbackQuery):
