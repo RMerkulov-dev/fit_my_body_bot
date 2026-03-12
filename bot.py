@@ -602,7 +602,13 @@ async def ai_food_process(message: types.Message, state: FSMContext):
                 content = content.replace('```', '').strip()
                 
             result = json.loads(content)
-            breakdown = result.get("breakdown", "Немає опису").replace("*", "").replace("_", "").replace("`", "")
+            
+            # Очищаємо маркдаун від AI
+            raw_breakdown = result.get("breakdown", "Немає опису").replace("*", "").replace("_", "").replace("`", "")
+            
+            # Виділяємо калорії жирним за допомогою регулярного виразу
+            breakdown = re.sub(r'(\d+)\s*(ккал|kcal)', r'**\1** \2', raw_breakdown, flags=re.IGNORECASE)
+            
             advice = result.get("advice", "").replace("*", "").replace("_", "").replace("`", "")
             
             total_calories = safe_int(result.get("total_calories", 0))
@@ -629,13 +635,13 @@ async def ai_food_process(message: types.Message, state: FSMContext):
     def format_rem(val):
         return f"❗️Перебір {abs(val)}" if val < 0 else str(val)
 
-    status_text = f"\n\n📊 **Залишок на сьогодні:**\n🤍 Ккал: {format_rem(rem_cal)}\n🥩 Білки: {format_rem(rem_p)} г | 🧈 Жири: {format_rem(rem_f)} г | 🍞 Вугл: {format_rem(rem_c)} г"
+    status_text = f"\n\n📊 **Залишок на сьогодні:**\n🤍 Ккал: **{format_rem(rem_cal)}**\n🥩 Білки: {format_rem(rem_p)} г | 🧈 Жири: {format_rem(rem_f)} г | 🍞 Вугл: {format_rem(rem_c)} г"
     advice_text = f"\n\n💡 **Коментар AI:** {advice}" if advice else ""
 
     if is_manual:
-        text = f"⚡ **Швидке введення:**\n\n**Разом:** {total_calories} ккал{status_text}"
+        text = f"⚡ **Швидке введення:**\n\n**Разом:** **{total_calories}** ккал{status_text}"
     else:
-        text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** {total_calories} ккал (Б:{total_p} Ж:{total_f} В:{total_c}){status_text}{advice_text}"
+        text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** **{total_calories}** ккал (Б:{total_p} Ж:{total_f} В:{total_c}){status_text}{advice_text}"
     
     callback_string = f"aisave_{total_calories}_{total_p}_{total_f}_{total_c}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
