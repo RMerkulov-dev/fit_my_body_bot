@@ -99,6 +99,7 @@ class WeightState(StatesGroup):
     waiting_for_weight = State()
 
 class AIState(StatesGroup):
+    waiting_for_custom_date = State()
     waiting_for_food_text = State()
 
 class AIGoalState(StatesGroup):
@@ -487,7 +488,7 @@ async def apply_ai_goal(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer("Не вдалося зберегти мету.")
 
 # ==========================================
-# 7. ДОДАВАННЯ ЇЖІ (БЖУ + ПОРАДИ + БЕЗПЕРЕРВНИЙ ВВІД)
+# 7. ДОДАВАННЯ ЇЖІ (ВКАЗАННЯ ДАТИ + БЖУ + ПОРАДИ)
 # ==========================================
 @dp.message(F.text == "✖️ Скасувати")
 async def cancel_action(message: types.Message, state: FSMContext):
@@ -504,14 +505,32 @@ async def process_weight(message: types.Message, state: FSMContext):
     try:
         weight = float(message.text.replace(',', '.'))
         today = datetime.now().date().isoformat()
+        user_id = message.from_user.id
+        diff_text = ""
+        
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("INSERT INTO weight_log (user_id, weight, date) VALUES (%s, %s, %s)", (message.from_user.id, weight, today))
+                # Шукаємо попередню вагу користувача
+                cursor.execute("SELECT weight FROM weight_log WHERE user_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
+                last_w_row = cursor.fetchone()
+                
+                if last_w_row:
+                    last_w = last_w_row[0]
+                    diff = weight - last_w
+                    if diff > 0:
+                        diff_text = f"\nРізниця з минулим разом: +{diff:.1f} кг 📈"
+                    elif diff < 0:
+                        diff_text = f"\nРізниця з минулим разом: {diff:.1f} кг 📉🎉"
+                    else:
+                        diff_text = f"\nВага без змін ⚖️"
+                        
+                cursor.execute("INSERT INTO weight_log (user_id, weight, date) VALUES (%s, %s, %s)", (user_id, weight, today))
             conn.commit()
-        await message.answer(f"✔️ Вага {weight} кг записана.", reply_markup=get_main_keyboard())
+            
+        await message.answer(f"✔️ Вага {weight} кг записана.{diff_text}", reply_markup=get_main_keyboard())
         await state.clear()
     except Exception:
-        await message.answer("Введіть коректне число.")
+        await message.answer("Введіть коректне число (наприклад 75.5).")
 
 @dp.message(F.text == "🥑 Внести Kcal AI")
 async def ai_food_start(message: types.Message, state: FSMContext):
@@ -527,9 +546,47 @@ async def ai_food_start(message: types.Message, state: FSMContext):
     except Exception as e:
         return await message.answer("Помилка бази даних.")
 
-    await message.answer("Опиши, що ти з'їв (наприклад: я з'їв 3 яйця і хліб)\n\n⚡ **АБО** просто напиши число калорій, якщо знаєш його (БЖУ тоді запишуться як нулі):", 
-                         reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
-    await state.set_state(AIState.waiting_for_food_text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Сьогодні", callback_data="fooddate_today"),
+         InlineKeyboardButton(text="🔙 Вчора", callback_data="fooddate_yesterday")],
+        [InlineKeyboardButton(text="✍️ Інша дата", callback_data="fooddate_custom")]
+    ])
+    
+    await message.answer("На який день бажаєш внести калорії?", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("fooddate_"))
+async def process_food_date(callback: types.CallbackQuery, state: FSMContext):
+    choice = callback.data.split("_")[1]
+    
+    if choice == "today":
+        target = datetime.now().date().isoformat()
+        await state.update_data(target_date=target)
+        await callback.message.edit_text("Опиши, що ти з'їв (наприклад: я з'їв 3 яйця і хліб)\n\n⚡ **АБО** просто напиши число калорій, якщо знаєш його:", parse_mode="Markdown")
+        await state.set_state(AIState.waiting_for_food_text)
+    elif choice == "yesterday":
+        target = (datetime.now() - timedelta(days=1)).date().isoformat()
+        await state.update_data(target_date=target)
+        await callback.message.edit_text("*(Запис на вчора)*\nОпиши, що ти з'їв:", parse_mode="Markdown")
+        await state.set_state(AIState.waiting_for_food_text)
+    elif choice == "custom":
+        await callback.message.edit_text("Введи дату у форматі ДД.ММ.РРРР (наприклад, 15.08.2023):")
+        await state.set_state(AIState.waiting_for_custom_date)
+
+@dp.message(AIState.waiting_for_custom_date)
+async def process_custom_date(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    if text == "✖️ Скасувати":
+        await state.clear()
+        return await message.answer("Скасовано.", reply_markup=get_main_keyboard())
+    
+    try:
+        dt = datetime.strptime(text, "%d.%m.%Y")
+        target = dt.date().isoformat()
+        await state.update_data(target_date=target)
+        await message.answer(f"*(Запис на {text})*\nОпиши, що ти з'їв:", parse_mode="Markdown", reply_markup=get_cancel_keyboard())
+        await state.set_state(AIState.waiting_for_food_text)
+    except ValueError:
+        await message.answer("Неправильний формат дати. Спробуй ще раз (ДД.ММ.РРРР) або натисни '✖️ Скасувати'.")
 
 @dp.message(AIState.waiting_for_food_text)
 async def ai_food_process(message: types.Message, state: FSMContext):
@@ -541,9 +598,11 @@ async def ai_food_process(message: types.Message, state: FSMContext):
     match_manual = re.fullmatch(r'(\d+)\s*(ккал|kcal|калорій|калорий)?', text_input.lower())
     is_manual = bool(match_manual)
     
-    # 1. Отримуємо поточну статистику за день ДО розрахунку, щоб AI міг дати пораду
+    data = await state.get_data()
+    target_date_iso = data.get('target_date', datetime.now().date().isoformat())
+    
+    # 1. Отримуємо поточну статистику за ЦІЛЬОВИЙ ДЕНЬ ДО розрахунку, щоб AI міг дати пораду
     user_id = message.from_user.id
-    today = datetime.now().date().isoformat()
     
     goal_cal, goal_p, goal_f, goal_c = 0, 0, 0, 0
     eaten_cal, eaten_p, eaten_f, eaten_c = 0, 0, 0, 0
@@ -555,7 +614,7 @@ async def ai_food_process(message: types.Message, state: FSMContext):
             if u: 
                 goal_cal, goal_p, goal_f, goal_c = (u[0] or 0), (u[1] or 0), (u[2] or 0), (u[3] or 0)
                 
-            cursor.execute("SELECT SUM(calories), SUM(protein), SUM(fat), SUM(carbs) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, today))
+            cursor.execute("SELECT SUM(calories), SUM(protein), SUM(fat), SUM(carbs) FROM calorie_log WHERE user_id = %s AND date = %s", (user_id, target_date_iso))
             e = cursor.fetchone()
             if e:
                 eaten_cal, eaten_p, eaten_f, eaten_c = (e[0] or 0), (e[1] or 0), (e[2] or 0), (e[3] or 0)
@@ -574,7 +633,7 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         Ти професійний дієтолог і емпатичний друг. Користувач з'їв наступне: "{text_input}".
         Оціни калорійність та БЖУ (білки, жири, вуглеводи) всіх продуктів і порахуй загальну суму.
         
-        Поточний статус користувача за сьогодні (ДО цього прийому): 
+        Поточний статус користувача за обраний день (ДО цього прийому): 
         З'їдено {eaten_cal} з {goal_cal} ккал. 
         Білки: {eaten_p}/{goal_p}г, Жири: {eaten_f}/{goal_f}г, Вуглеводи: {eaten_c}/{goal_c}г.
         
@@ -635,7 +694,17 @@ async def ai_food_process(message: types.Message, state: FSMContext):
     def format_rem(val):
         return f"❗️Перебір {abs(val)}" if val < 0 else str(val)
 
-    status_text = f"\n\n📊 **Залишок на сьогодні:**\n🤍 Ккал: **{format_rem(rem_cal)}**\n🥩 Білки: {format_rem(rem_p)} г | 🧈 Жири: {format_rem(rem_f)} г | 🍞 Вугл: {format_rem(rem_c)} г"
+    # Визначаємо мітку для дати
+    date_obj = datetime.strptime(target_date_iso, "%Y-%m-%d").date()
+    today_obj = datetime.now().date()
+    if date_obj == today_obj:
+        day_label = "сьогодні"
+    elif date_obj == today_obj - timedelta(days=1):
+        day_label = "вчора"
+    else:
+        day_label = date_obj.strftime("%d.%m.%Y")
+
+    status_text = f"\n\n📊 **Залишок на {day_label}:**\n🤍 Ккал: **{format_rem(rem_cal)}**\n🥩 Білки: {format_rem(rem_p)} г | 🧈 Жири: {format_rem(rem_f)} г | 🍞 Вугл: {format_rem(rem_c)} г"
     advice_text = f"\n\n💡 **Коментар AI:** {advice}" if advice else ""
 
     if is_manual:
@@ -643,7 +712,7 @@ async def ai_food_process(message: types.Message, state: FSMContext):
     else:
         text = f"🥑 **Аналіз AI:**\n\n{breakdown}\n\n**Разом:** **{total_calories}** ккал (Б:{total_p} Ж:{total_f} В:{total_c}){status_text}{advice_text}"
     
-    callback_string = f"aisave_{total_calories}_{total_p}_{total_f}_{total_c}"
+    callback_string = f"aisave_{total_calories}_{total_p}_{total_f}_{total_c}_{target_date_iso}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📥 Зберегти", callback_data=callback_string),
@@ -652,11 +721,12 @@ async def ai_food_process(message: types.Message, state: FSMContext):
     ])
     
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-    await state.clear()
+    # Стан не очищуємо, бо в ньому лежить target_date, який знадобиться, якщо юзер натисне "Додати ще їжу"
 
 @dp.callback_query(F.data == "aicancel")
-async def cancel_ai_calories(callback: types.CallbackQuery):
+async def cancel_ai_calories(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("✖️ Збереження їжі скасовано. Цей прийом не додано до вашого щоденника.")
+    await state.clear()
 
 @dp.callback_query(F.data.startswith("aisave_"))
 async def save_ai_calories(callback: types.CallbackQuery):
@@ -666,13 +736,14 @@ async def save_ai_calories(callback: types.CallbackQuery):
     f = int(parts[3]) if len(parts) > 3 else 0
     c = int(parts[4]) if len(parts) > 4 else 0
     
-    today = datetime.now().date().isoformat()
+    # Витягуємо збережену дату з callback, або беремо сьогодні за замовчуванням
+    date_to_save = parts[5] if len(parts) > 5 else datetime.now().date().isoformat()
     
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor() as cursor:
                 cursor.execute("INSERT INTO calorie_log (user_id, meal_type, calories, protein, fat, carbs, date) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
-                               (callback.from_user.id, "ai_food", calories, p, f, c, today))
+                               (callback.from_user.id, "ai_food", calories, p, f, c, date_to_save))
             conn.commit()
             
         # Замінюємо кнопку "Зберегти" на кнопку безперервного вводу
@@ -686,7 +757,19 @@ async def save_ai_calories(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "add_more_food")
 async def add_more_food_prompt(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Пиши, що ще ти з'їв (наприклад: кава і яблуко):", reply_markup=get_cancel_keyboard())
+    data = await state.get_data()
+    t_date = data.get('target_date', datetime.now().date().isoformat())
+    
+    date_obj = datetime.strptime(t_date, "%Y-%m-%d").date()
+    today_obj = datetime.now().date()
+    if date_obj == today_obj:
+        day_label = "сьогодні"
+    elif date_obj == today_obj - timedelta(days=1):
+        day_label = "вчора"
+    else:
+        day_label = date_obj.strftime("%d.%m.%Y")
+        
+    await callback.message.answer(f"*(Запис на {day_label})*\nПиши, що ще ти з'їв (наприклад: кава і яблуко):", reply_markup=get_cancel_keyboard(), parse_mode="Markdown")
     await state.set_state(AIState.waiting_for_food_text)
     await callback.answer()
 
@@ -832,7 +915,7 @@ async def callback_cancel_reset(callback: types.CallbackQuery):
 
 
 # ==========================================
-# 9. SOS - ПІДТРИМКА
+# 9. SOS - ПІДТРИМКА (Чат з Експертом)
 # ==========================================
 @dp.message(F.text == "🆘 SOS")
 async def sos_start(message: types.Message, state: FSMContext):
@@ -840,10 +923,13 @@ async def sos_start(message: types.Message, state: FSMContext):
         return await message.answer("Функція AI поки недоступна.")
     
     await message.answer(
-        "❤️ **Я не тільки твій дієтолог, але й друг!**\n\n"
-        "Шлях до ідеального тіла буває складним, і це абсолютно нормально — відчувати втому чи бажання все кинути.\n\n"
-        "Розкажи мені, що трапилося? Хочеться зірватися на солодке? Втратив(ла) мотивацію? Просто сумно?\n"
-        "Напиши мені сюди свій біль або запитання, і ми разом знайдемо вихід!",
+        "🧠 **AI-Експерт (Запитання-Відповідь)**\n\n"
+        "Я не тільки твій щоденник, але й експерт зі здорового способу життя!\n\n"
+        "Задавай будь-які питання про харчування, тренування чи здоров'я. Наприклад:\n"
+        "🔸 _Як правильно скласти раціон?_\n"
+        "🔸 _Які вправи краще для пресу?_\n"
+        "🔸 _Чим корисний білок?_\n\n"
+        "Напиши своє запитання нижче:",
         reply_markup=get_cancel_keyboard(), parse_mode="Markdown"
     )
     await state.set_state(SOSState.waiting_for_question)
@@ -854,7 +940,7 @@ async def sos_process(message: types.Message, state: FSMContext):
         await state.clear()
         return await message.answer("Повертаємось до головного меню. Пам'ятай, я завжди поруч! 🦾", reply_markup=get_main_keyboard())
         
-    await message.answer("⏳ Читаю і думаю, як тобі краще допомогти...", reply_markup=get_main_keyboard())
+    await message.answer("⏳ Шукаю відповідь...", reply_markup=get_main_keyboard())
     
     user_id = message.from_user.id
     try:
@@ -877,20 +963,19 @@ async def sos_process(message: types.Message, state: FSMContext):
         user_info = "Параметри користувача поки не заповнені."
         
     prompt = f"""
-    Ти професійний фітнес-тренер, дієтолог і найкращий друг.
-    Користувач натиснув кнопку SOS. Йому потрібна психологічна та професійна підтримка, щоб не зірватися з дієти/тренувань, або просто порада.
+    Ти професійний фітнес-тренер, дієтолог і експерт зі здорового способу життя.
     
     Дані про користувача:
     {user_info}
     
-    Повідомлення від користувача: "{message.text}"
+    Запитання від користувача: "{message.text}"
     
     Твоє завдання:
-    1. Вислухати і підтримати як дуже емпатичний і близький друг.
-    2. Дати дієву, але м'яку пораду як експерт (наприклад, чим безпечно замінити солодке, як відпочити, чому один зрив - це не кінець всього шляху).
-    3. Відповідь має бути теплою, надихаючою та з використанням дружніх емодзі. 
+    1. Дати експертну, зрозумілу та структуровану відповідь на запитання.
+    2. Використовуй емодзі для покращення читабельності.
+    3. Відповідь має бути інформативною, дружньою та корисною.
     4. ВІДПОВІДАЙ УКРАЇНСЬКОЮ МОВОЮ.
-    5. НЕ використовуй маркдаун символи форматирования (ніяких зірочок *, підкреслень _ чи зворотних апострофів `), пиши просто звичайним текстом і емодзі.
+    5. НЕ використовуй маркдаун символи форматування (ніяких зірочок *, підкреслень _ чи зворотних апострофів `), пиши просто звичайним текстом і емодзі.
     """
     
     try:
@@ -902,12 +987,22 @@ async def sos_process(message: types.Message, state: FSMContext):
         ai_answer = response.choices[0].message.content
         ai_answer = ai_answer.replace("*", "").replace("_", "").replace("`", "")
         
-        await message.answer(f"❤️ **Твій AI-Друг:**\n\n{ai_answer}", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Запитати ще", callback_data="ask_sos_more")]
+        ])
+        
+        await message.answer(f"🧠 **Відповідь AI:**\n\n{ai_answer}", parse_mode="Markdown", reply_markup=kb)
         await state.clear()
     except Exception as e:
         logger.error(f"SOS AI Error: {e}")
-        await message.answer("✖️ Виникла помилка зв'язку з AI. Але тримайся, я в тебе вірю!", reply_markup=get_main_keyboard())
+        await message.answer("✖️ Виникла помилка зв'язку з AI.", reply_markup=get_main_keyboard())
         await state.clear()
+
+@dp.callback_query(F.data == "ask_sos_more")
+async def ask_sos_more_prompt(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("Пиши своє наступне запитання:", reply_markup=get_cancel_keyboard())
+    await state.set_state(SOSState.waiting_for_question)
+    await callback.answer()
 
 # ==========================================
 # 10. ЗАПУСК БОТА
