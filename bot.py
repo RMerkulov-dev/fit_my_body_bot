@@ -721,7 +721,10 @@ async def ai_food_process(message: types.Message, state: FSMContext):
     ])
     
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-    # Стан не очищуємо, бо в ньому лежить target_date, який знадобиться, якщо юзер натисне "Додати ще їжу"
+    
+    # ТУТ БУВ БАГ! Очищуємо стан після видачі результату, щоб не блокувати меню. 
+    # (Дата передається всередині callback_data кнопки "Зберегти" та "Додати ще їжу")
+    await state.clear()
 
 @dp.callback_query(F.data == "aicancel")
 async def cancel_ai_calories(callback: types.CallbackQuery, state: FSMContext):
@@ -746,19 +749,23 @@ async def save_ai_calories(callback: types.CallbackQuery):
                                (callback.from_user.id, "ai_food", calories, p, f, c, date_to_save))
             conn.commit()
             
-        # Замінюємо кнопку "Зберегти" на кнопку безперервного вводу
+        # Замінюємо кнопку "Зберегти" на кнопку безперервного вводу та "прокидуємо" дату далі
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Додати ще їжу", callback_data="add_more_food")]
+            [InlineKeyboardButton(text="➕ Додати ще їжу", callback_data=f"add_more_food_{date_to_save}")]
         ])
         await callback.message.edit_text(callback.message.text + "\n\n✔️ *Успішно збережено в щоденник!*", reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Помилка при збереженні AI калорій: {e}")
         await callback.message.answer("Не вдалося зберегти калорії в базу даних.")
 
-@dp.callback_query(F.data == "add_more_food")
+@dp.callback_query(F.data.startswith("add_more_food_"))
 async def add_more_food_prompt(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    t_date = data.get('target_date', datetime.now().date().isoformat())
+    parts = callback.data.split("_")
+    # Відновлюємо дату з callback (напр. add_more_food_2023-10-27)
+    t_date = parts[3] if len(parts) > 3 else datetime.now().date().isoformat()
+    
+    # Відновлюємо target_date у стані, оскільки ми його очистили раніше
+    await state.update_data(target_date=t_date)
     
     date_obj = datetime.strptime(t_date, "%Y-%m-%d").date()
     today_obj = datetime.now().date()
