@@ -590,19 +590,20 @@ async def ai_food_process(message: types.Message, state: FSMContext):
         
         prompt = f"""
         Ти професійний дієтолог і емпатичний друг. Користувач з'їв наступне: "{text_input}".
-        Оціни калорійність та БЖУ (білки, жири, вуглеводи) всіх продуктів і порахуй загальну суму.
+        Оціни калорійність та БЖУ (білки, жири, вуглеводи) ТІЛЬКИ ЦЬОГО ПРИЙОМУ ЇЖІ (продуктів, які ввів користувач).
         
         Поточний статус користувача за сьогодні (ДО цього прийому): 
         З'їдено {eaten_cal} з {goal_cal} ккал. 
         Білки: {eaten_p}/{goal_p}г, Жири: {eaten_f}/{goal_f}г, Вуглеводи: {eaten_c}/{goal_c}г.
+        УВАГА: Враховуй ці цифри ЛИШЕ для формування поради (advice). НІ В ЯКОМУ РАЗІ не додавай їх до суми поточного прийому!
         
         Твоя відповідь має бути СУВОРО у форматі JSON:
         "breakdown" - рядковий опис розрахунку. КОЖЕН продукт має бути з нового рядка строго у такому форматі (без зайвих символів чи зірочок):
         "🔹 Назва продукту (вага) — ХХ ккал (Б:Х Ж:Х В:Х)"
-        "total_calories" - ціле число (сума калорій),
-        "total_protein" - ціле число (білки в грамах),
-        "total_fat" - ціле число (жири в грамах),
-        "total_carbs" - ціле число (вуглеводи в грамах),
+        "total_calories" - ціле число (сума калорій ТІЛЬКИ введених зараз продуктів),
+        "total_protein" - ціле число (білки в грамах ТІЛЬКИ введених зараз продуктів),
+        "total_fat" - ціле число (жири в грамах ТІЛЬКИ введених зараз продуктів),
+        "total_carbs" - ціле число (вуглеводи в грамах ТІЛЬКИ введених зараз продуктів),
         "advice" - коротка, дружня порада (1-2 речення) щодо цього прийому їжі в контексті його залишку на день. Наприклад, якщо після цієї їжі багато жирів, м'яко попередь про це, або похвали за білок. Пиши як близький друг, використовуй емодзі.
         """
 
@@ -718,9 +719,30 @@ async def btn_statistics(message: types.Message):
         [InlineKeyboardButton(text="🗓 Сьогодні (Зведення)", callback_data="stat_today")],
         [InlineKeyboardButton(text="🔥 За 7 днів", callback_data="stat_7days")],
         [InlineKeyboardButton(text="🚀 Загальний прогрес", callback_data="stat_overall")],
+        [InlineKeyboardButton(text="↩️ Видалити останній запис їжі", callback_data="undo_last_food")],
         [InlineKeyboardButton(text="🧨 Скинути статистику", callback_data="reset_stats")]
     ])
-    await message.answer("Обери звіт:", reply_markup=kb)
+    await message.answer("Обери звіт або дію:", reply_markup=kb)
+
+@dp.callback_query(F.data == "undo_last_food")
+async def undo_last_food_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    try:
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, calories, date FROM calorie_log WHERE user_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
+                last_record = cursor.fetchone()
+                
+                if last_record:
+                    record_id, cals, r_date = last_record
+                    cursor.execute("DELETE FROM calorie_log WHERE id = %s", (record_id,))
+                    conn.commit()
+                    await callback.message.edit_text(f"✔️ Останній прийом їжі ({cals} ккал за {r_date}) було успішно видалено!")
+                else:
+                    await callback.message.edit_text("🤷‍♂️ Історія їжі порожня, немає що видаляти.")
+    except Exception as e:
+        logger.error(f"Помилка при видаленні останнього запису їжі: {e}")
+        await callback.message.edit_text("✖️ Виникла помилка при видаленні запису.")
 
 @dp.callback_query(F.data == "stat_today")
 async def callback_stat_today(callback: types.CallbackQuery):
